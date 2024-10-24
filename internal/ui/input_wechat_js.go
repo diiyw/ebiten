@@ -1,4 +1,4 @@
-//go:build !wechat
+//go:build wechat
 
 // Copyright 2015 Hajime Hoshi
 //
@@ -13,11 +13,11 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+
 package ui
 
 import (
 	"math"
-	"strings"
 	"syscall/js"
 	"unicode"
 )
@@ -28,15 +28,18 @@ var (
 	stringMeta    = js.ValueOf("Meta")
 	stringShift   = js.ValueOf("Shift")
 
-	stringKeydown    = js.ValueOf("keydown")
-	stringKeyup      = js.ValueOf("keyup")
-	stringMousedown  = js.ValueOf("mousedown")
-	stringMouseup    = js.ValueOf("mouseup")
-	stringMousemove  = js.ValueOf("mousemove")
-	stringWheel      = js.ValueOf("wheel")
-	stringTouchstart = js.ValueOf("touchstart")
-	stringTouchend   = js.ValueOf("touchend")
-	stringTouchmove  = js.ValueOf("touchmove")
+	stringKeydown      = js.ValueOf("keydown")
+	stringKeyup        = js.ValueOf("keyup")
+	stringMousedown    = js.ValueOf("mousedown")
+	stringMouseup      = js.ValueOf("mouseup")
+	stringMousemove    = js.ValueOf("mousemove")
+	stringWheel        = js.ValueOf("wheel")
+	stringTouchstart   = js.ValueOf("touchstart")
+	stringTouchend     = js.ValueOf("touchend")
+	stringTouchmove    = js.ValueOf("touchmove")
+	stringOnTouchstart = js.ValueOf("ontouchstart")
+	stringOnTouchend   = js.ValueOf("ontouchend")
+	stringOnTouchmove  = js.ValueOf("ontouchmove")
 )
 
 type touchInClient struct {
@@ -172,7 +175,8 @@ func (u *UserInterface) updateInputFromEvent(e js.Value) error {
 		// TODO: What if e.deltaMode is not DOM_DELTA_PIXEL?
 		u.inputState.WheelX = -e.Get("deltaX").Float()
 		u.inputState.WheelY = -e.Get("deltaY").Float()
-	case t.Equal(stringTouchstart) || t.Equal(stringTouchend) || t.Equal(stringTouchmove):
+	case t.Equal(stringTouchstart) || t.Equal(stringTouchend) || t.Equal(stringTouchmove) ||
+		t.Equal(stringOnTouchstart) || t.Equal(stringOnTouchend) || t.Equal(stringOnTouchmove):
 		u.updateTouchesFromEvent(e)
 	}
 
@@ -206,9 +210,9 @@ func (u *UserInterface) recoverCursorPosition() {
 func (u *UserInterface) updateTouchesFromEvent(e js.Value) {
 	u.touchesInClient = u.touchesInClient[:0]
 
-	touches := e.Get("targetTouches")
+	touches := e.Get("touches")
 	for i := 0; i < touches.Length(); i++ {
-		t := touches.Call("item", i)
+		t := touches.Index(i)
 		u.touchesInClient = append(u.touchesInClient, touchInClient{
 			id: TouchID(t.Get("identifier").Int()),
 			x:  t.Get("clientX").Float(),
@@ -245,52 +249,12 @@ func isKeyString(str string) bool {
 	return true
 }
 
-var (
-	jsKeyboard                     = js.Global().Get("navigator").Get("keyboard")
-	jsKeyboardGetLayoutMap         js.Value
-	jsKeyboardGetLayoutMapCh       chan js.Value
-	jsKeyboardGetLayoutMapCallback js.Func
-)
-
-func init() {
-	if !jsKeyboard.Truthy() {
-		return
-	}
-
-	jsKeyboardGetLayoutMap = jsKeyboard.Get("getLayoutMap").Call("bind", jsKeyboard)
-	jsKeyboardGetLayoutMapCh = make(chan js.Value, 1)
-	jsKeyboardGetLayoutMapCallback = js.FuncOf(func(this js.Value, args []js.Value) any {
-		jsKeyboardGetLayoutMapCh <- args[0]
-		return nil
-	})
-}
-
 func (u *UserInterface) KeyName(key Key) string {
-	if !u.isRunning() {
-		return ""
-	}
-
-	// keyboardLayoutMap is reset every tick.
-	if u.keyboardLayoutMap.IsUndefined() {
-		if !jsKeyboard.Truthy() {
-			return ""
-		}
-
-		// Invoke getLayoutMap every tick to detect the keyboard change.
-		// TODO: Calling this every tick might be inefficient. Is there a way to detect a keyboard change?
-		jsKeyboardGetLayoutMap.Invoke().Call("then", jsKeyboardGetLayoutMapCallback)
-		u.keyboardLayoutMap = <-jsKeyboardGetLayoutMapCh
-	}
-
-	n := u.keyboardLayoutMap.Call("get", uiKeyToJSCode[key])
-	if n.IsUndefined() {
-		return ""
-	}
-	return n.String()
+	return ""
 }
 
 func (u *UserInterface) UpdateInputFromEvent(e js.Value) {
-	u.updateInputFromEvent(e)
+	_ = u.updateInputFromEvent(e)
 }
 
 func (u *UserInterface) saveCursorPosition() {
@@ -435,13 +399,5 @@ func (i *InputState) resetForBlur() {
 }
 
 func IsVirtualKeyboard() bool {
-	// Detect a virtual keyboard by the user agent.
-	// Note that this is not a correct way to detect a virtual keyboard.
-	// In the future, we should use the `navigator.virtualKeyboard` API.
-	// https://developer.mozilla.org/en-US/docs/Web/API/Navigator/virtualKeyboard
-	ua := js.Global().Get("navigator").Get("userAgent").String()
-	if strings.Contains(ua, "Android") || strings.Contains(ua, "iPhone") || strings.Contains(ua, "iPad") || strings.Contains(ua, "iPod") {
-		return true
-	}
-	return false
+	return true
 }

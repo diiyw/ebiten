@@ -1,4 +1,4 @@
-//go:build !wechat
+//go:build wechat
 
 // Copyright 2024 The Ebitengine Authors
 //
@@ -13,9 +13,9 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+
 package ui
 
 func (u *UserInterface) ScreenSizeInFullscreen() (int, int) {
-	// On browsers, ScreenSizeInFullscreen returns the 'window' (global object) size, not 'screen' size for backward compatibility (#2145).
-	return window.Get("innerWidth").Int(), window.Get("innerHeight").Int()
+	return systemInfoSync.Get("screenWidth").Int(), systemInfoSync.Get("screenHeight").Int()
 }
