@@ -148,8 +148,8 @@ func compileShader(program *shaderir.Program) (vsh, psh *_ID3DBlob, ferr error) 
 func constantBufferSize(uniformTypes []shaderir.Type, uniformOffsets []int) int {
 	var size int
 	for i, typ := range uniformTypes {
-		if size < uniformOffsets[i]/4 {
-			size = uniformOffsets[i] / 4
+		if size < uniformOffsets[i] {
+			size = uniformOffsets[i]
 		}
 
 		switch typ.Main {
@@ -199,14 +199,17 @@ func constantBufferSize(uniformTypes []shaderir.Type, uniformOffsets []int) int 
 }
 
 func adjustUniforms(uniformTypes []shaderir.Type, uniformOffsets []int, uniforms []uint32) []uint32 {
+	// Note that HLSL's matrices are row-major, while GLSL and MSL are column-major.
+	// Transpose matrices so that users can access matrix indices in the same way as GLSL and MSL.
+
 	var fs []uint32
 	var idx int
 	for i, typ := range uniformTypes {
-		if len(fs) < uniformOffsets[i]/4 {
-			fs = append(fs, make([]uint32, uniformOffsets[i]/4-len(fs))...)
+		if len(fs) < uniformOffsets[i] {
+			fs = append(fs, make([]uint32, uniformOffsets[i]-len(fs))...)
 		}
 
-		n := typ.Uint32Count()
+		n := typ.DwordCount()
 		switch typ.Main {
 		case shaderir.Float:
 			fs = append(fs, uniforms[idx:idx+1]...)
@@ -286,11 +289,11 @@ func adjustUniforms(uniformTypes []shaderir.Type, uniformOffsets []int, uniforms
 					u := uniforms[idx+4*j : idx+4*(j+1)]
 					fs = append(fs,
 						u[0], u[2], 0, 0,
-						u[1], u[3], 0, 0,
+						u[1], u[3],
 					)
-				}
-				if typ.Length > 0 {
-					fs = fs[:len(fs)-2]
+					if j < typ.Length-1 {
+						fs = append(fs, 0, 0)
+					}
 				}
 			case shaderir.Mat3:
 				for j := 0; j < typ.Length; j++ {
@@ -298,11 +301,11 @@ func adjustUniforms(uniformTypes []shaderir.Type, uniformOffsets []int, uniforms
 					fs = append(fs,
 						u[0], u[3], u[6], 0,
 						u[1], u[4], u[7], 0,
-						u[2], u[5], u[8], 0,
+						u[2], u[5], u[8],
 					)
-				}
-				if typ.Length > 0 {
-					fs = fs[:len(fs)-1]
+					if j < typ.Length-1 {
+						fs = append(fs, 0)
+					}
 				}
 			case shaderir.Mat4:
 				for j := 0; j < typ.Length; j++ {

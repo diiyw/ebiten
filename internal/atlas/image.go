@@ -405,7 +405,7 @@ func (i *Image) drawTriangles(srcs [graphics.ShaderSrcImageCount]*Image, vertice
 			vertices[i+2] += oxf
 			vertices[i+3] += oyf
 		}
-		if shader.ensureShader().Unit() == shaderir.Texels {
+		if shader.unit == shaderir.Texels {
 			sw, sh := srcs[0].backend.restorable.InternalSize()
 			swf, shf := float32(sw), float32(sh)
 			for i := 0; i < n; i += graphics.VertexFloatCount {
@@ -421,6 +421,7 @@ func (i *Image) drawTriangles(srcs [graphics.ShaderSrcImageCount]*Image, vertice
 		}
 	}
 
+	var imgs [graphics.ShaderSrcImageCount]*restorable.Image
 	for i, src := range srcs {
 		if src == nil {
 			continue
@@ -429,33 +430,18 @@ func (i *Image) drawTriangles(srcs [graphics.ShaderSrcImageCount]*Image, vertice
 		// A source region can be deliberately empty when this is not needed in order to avoid unexpected
 		// performance issue (#1293).
 		// TODO: This should no longer be needed but is kept just in case. Remove this later.
-		if srcRegions[i].Empty() {
-			continue
-		}
-
-		r := src.regionWithPadding()
-		srcRegions[i] = srcRegions[i].Add(r.Min)
-	}
-
-	var imgs [graphics.ShaderSrcImageCount]*restorable.Image
-	for i, src := range srcs {
-		if src == nil {
-			continue
+		if !srcRegions[i].Empty() {
+			r := src.regionWithPadding()
+			srcRegions[i] = srcRegions[i].Add(r.Min)
 		}
 		imgs[i] = src.backend.restorable
-	}
-
-	i.backend.restorable.DrawTriangles(imgs, vertices, indices, blend, dstRegion, srcRegions, shader.ensureShader(), uniforms, fillRule, hint)
-
-	for _, src := range srcs {
-		if src == nil {
-			continue
-		}
 		if !src.isOnSourceBackend() && src.canBePutOnAtlas() {
 			// src might already registered, but assigning it again is not harmful.
 			imagesToPutOnSourceBackend.add(src)
 		}
 	}
+
+	i.backend.restorable.DrawTriangles(imgs, vertices, indices, blend, dstRegion, srcRegions, shader.ensureShader(), uniforms, fillRule, hint)
 }
 
 // WritePixels replaces the pixels on the image.
@@ -851,4 +837,19 @@ func DumpImages(graphicsDriver graphicsdriver.Graphics, dir string) (string, err
 	}
 
 	return restorable.DumpImages(graphicsDriver, dir)
+}
+
+func TotalGPUImageMemoryUsageInBytes() int64 {
+	backendsM.Lock()
+	defer backendsM.Unlock()
+
+	var sum int64
+	for _, b := range theBackends {
+		if b.restorable == nil {
+			continue
+		}
+		w, h := b.restorable.InternalSize()
+		sum += 4 * int64(w) * int64(h)
+	}
+	return sum
 }

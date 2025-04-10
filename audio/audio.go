@@ -143,12 +143,21 @@ func NewContext(sampleRate int) *Context {
 				c.setReady()
 			}()
 		}
-
-		if err := c.updatePlayers(); err != nil {
-			return err
-		}
 		return nil
 	})
+
+	// In the current Ebitengine implementation, update might not be called when the window is in background (#3154).
+	// In this case, an audio player position is not updated correctly with AppendHookOnBeforeUpdate.
+	// Use a distinct goroutine to update the player states.
+	go func() {
+		for {
+			if err := c.updatePlayers(); err != nil {
+				c.setError(err)
+				return
+			}
+			time.Sleep(time.Second / 100)
+		}
+	}()
 
 	return c
 }
@@ -172,9 +181,12 @@ func (c *Context) error() error {
 	c.m.Lock()
 	defer c.m.Unlock()
 	if c.err != nil {
-		return c.err
+		return fmt.Errorf("audio: audio error: %w", c.err)
 	}
-	return c.playerFactory.error()
+	if err := c.playerFactory.error(); err != nil {
+		return fmt.Errorf("audio: audio error: %w", err)
+	}
+	return nil
 }
 
 func (c *Context) setReady() {
@@ -544,12 +556,48 @@ func (h *hookerImpl) AppendHookOnBeforeUpdate(f func() error) {
 	hook.AppendHookOnBeforeUpdate(f)
 }
 
+// ResampleReader converts the sample rate of the given singed 16bit integer, little-endian, 2 channels (stereo) stream.
+// size is the length of the source stream in bytes.
+// from is the original sample rate.
+// to is the target sample rate.
+//
+// If the original sample rate equals to the new one, ResampleReader returns source as it is.
+//
+// The returned value implements io.Seeker when the source implements io.Seeker.
+// The returned value might implement io.Seeker even when the source doesn't implement io.Seeker, but
+// there is no guarantee that the Seek function works correctly.
+func ResampleReader(source io.Reader, size int64, from, to int) io.Reader {
+	if from == to {
+		return source
+	}
+	return convert.NewResampling(source, size, from, to, bitDepthInBytesInt16)
+}
+
+// ResampleReaderF32 converts the sample rate of the given 32bit float, little-endian, 2 channels (stereo) stream.
+// size is the length of the source stream in bytes.
+// from is the original sample rate.
+// to is the target sample rate.
+//
+// If the original sample rate equals to the new one, ResampleReaderF32 returns source as it is.
+//
+// The returned value implements io.Seeker when the source implements io.Seeker.
+// The returned value might implement io.Seeker even when the source doesn't implement io.Seeker, but
+// there is no guarantee that the Seek function works correctly.
+func ResampleReaderF32(source io.Reader, size int64, from, to int) io.Reader {
+	if from == to {
+		return source
+	}
+	return convert.NewResampling(source, size, from, to, bitDepthInBytesFloat32)
+}
+
 // Resample converts the sample rate of the given singed 16bit integer, little-endian, 2 channels (stereo) stream.
 // size is the length of the source stream in bytes.
 // from is the original sample rate.
 // to is the target sample rate.
 //
 // If the original sample rate equals to the new one, Resample returns source as it is.
+//
+// Deprecated: as of v2.9. Use ResampleReader instead.
 func Resample(source io.ReadSeeker, size int64, from, to int) io.ReadSeeker {
 	if from == to {
 		return source
@@ -562,7 +610,9 @@ func Resample(source io.ReadSeeker, size int64, from, to int) io.ReadSeeker {
 // from is the original sample rate.
 // to is the target sample rate.
 //
-// If the original sample rate equals to the new one, Resample returns source as it is.
+// If the original sample rate equals to the new one, ResampleF32 returns source as it is.
+//
+// Deprecated: as of v2.9. Use ResampleReaderF32 instead.
 func ResampleF32(source io.ReadSeeker, size int64, from, to int) io.ReadSeeker {
 	if from == to {
 		return source

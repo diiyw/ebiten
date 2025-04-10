@@ -15,7 +15,7 @@
 // Package textinput provides a text-inputting controller.
 // This package is experimental and the API might be changed in the future.
 //
-// This package is supported by macOS and Web browsers so far.
+// This package is supported on Windows, macOS, and Web browsers so far.
 package textinput
 
 import (
@@ -50,7 +50,7 @@ type State struct {
 // Start is the low-level API. For most use cases, Field is easier to use.
 //
 // Start returns nil and nil if the current environment doesn't support this package.
-func Start(x, y int) (states chan State, close func()) {
+func Start(x, y int) (states <-chan State, close func()) {
 	cx, cy := ui.Get().LogicalPositionToClientPositionInNativePixels(float64(x), float64(y))
 	return theTextInput.Start(int(cx), int(cy))
 }

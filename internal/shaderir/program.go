@@ -16,6 +16,7 @@
 package shaderir
 
 import (
+	"bytes"
 	"encoding/hex"
 	"go/constant"
 	"go/token"
@@ -35,7 +36,7 @@ type SourceHash [16]byte
 
 func CalcSourceHash(source []byte) SourceHash {
 	h := fnv.New128a()
-	_, _ = h.Write(source)
+	_, _ = h.Write(bytes.TrimSpace(source))
 
 	var hash SourceHash
 	h.Sum(hash[:0])
@@ -493,7 +494,7 @@ func (p *Program) FilterUniformVariables(uniforms []uint32) {
 		p.uniformFactors = make([]uint32, len(uniforms))
 		var idx int
 		for i, typ := range p.Uniforms {
-			c := typ.Uint32Count()
+			c := typ.DwordCount()
 			if reachableUniforms[i] {
 				for i := idx; i < idx+c; i++ {
 					p.uniformFactors[i] = 1

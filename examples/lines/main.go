@@ -21,40 +21,39 @@ import (
 	"log"
 	"math"
 
+	"github.com/ebitengine/debugui"
+
 	"github.com/hajimehoshi/ebiten/v2"
-	"github.com/hajimehoshi/ebiten/v2/ebitenutil"
 	"github.com/hajimehoshi/ebiten/v2/inpututil"
 	"github.com/hajimehoshi/ebiten/v2/vector"
 )
 
-var (
-	whiteImage = ebiten.NewImage(3, 3)
-
-	// whiteSubImage is an internal sub image of whiteImage.
-	// Use whiteSubImage at DrawTriangles instead of whiteImage in order to avoid bleeding edges.
-	whiteSubImage = whiteImage.SubImage(image.Rect(1, 1, 2, 2)).(*ebiten.Image)
-)
-
-func init() {
-	whiteImage.Fill(color.White)
-}
-
 const (
 	screenWidth  = 640
-	screenHeight = 480
+	screenHeight = 640
 )
 
 type Game struct {
-	counter int
+	debugui debugui.DebugUI
 
-	vertices []ebiten.Vertex
-	indices  []uint16
+	counter int
 
 	aa         bool
 	showCenter bool
 }
 
 func (g *Game) Update() error {
+	if _, err := g.debugui.Update(func(ctx *debugui.Context) error {
+		ctx.Window("Lines", image.Rect(10, 10, 260, 160), func(layout debugui.ContainerLayout) {
+			ctx.Text(fmt.Sprintf("FPS: %0.2f", ebiten.ActualFPS()))
+			ctx.Text(fmt.Sprintf("TPS: %0.2f", ebiten.ActualTPS()))
+			ctx.Checkbox(&g.aa, "Anti-aliasing")
+			ctx.Checkbox(&g.showCenter, "Show center lines")
+		})
+		return nil
+	}); err != nil {
+		return err
+	}
 	g.counter++
 	if inpututil.IsKeyJustPressed(ebiten.KeyA) {
 		g.aa = !g.aa
@@ -82,7 +81,7 @@ func (g *Game) Draw(screen *ebiten.Image) {
 
 	ow, oh := target.Bounds().Dx(), target.Bounds().Dy()
 	size := min(ow/(len(joins)+1), oh/(len(caps)+1))
-	offsetX, offsetY := (ow-size*len(joins))/2, (oh-size*len(caps))/2
+	offsetX, offsetY := (ow-size*len(joins))/2, (oh-size*len(caps))*3/4
 
 	// Render the lines on the target.
 	for j, cap := range caps {
@@ -96,10 +95,7 @@ func (g *Game) Draw(screen *ebiten.Image) {
 		}
 	}
 
-	msg := fmt.Sprintf(`FPS: %0.2f, TPS: %0.2f
-Press A to switch anti-aliasing.
-Press C to switch to draw the center lines.`, ebiten.ActualFPS(), ebiten.ActualTPS())
-	ebitenutil.DebugPrint(screen, msg)
+	g.debugui.Draw(screen)
 }
 
 func (g *Game) drawLine(screen *ebiten.Image, region image.Rectangle, cap vector.LineCap, join vector.LineJoin, miterLimit float32) {
@@ -125,34 +121,12 @@ func (g *Game) drawLine(screen *ebiten.Image, region image.Rectangle, cap vector
 	op.LineJoin = join
 	op.MiterLimit = miterLimit
 	op.Width = float32(r / 2)
-	vs, is := path.AppendVerticesAndIndicesForStroke(g.vertices[:0], g.indices[:0], op)
-	for i := range vs {
-		vs[i].SrcX = 1
-		vs[i].SrcY = 1
-		vs[i].ColorR = 1
-		vs[i].ColorG = 1
-		vs[i].ColorB = 1
-		vs[i].ColorA = 1
-	}
-	screen.DrawTriangles(vs, is, whiteSubImage, &ebiten.DrawTrianglesOptions{
-		AntiAlias: g.aa,
-	})
+	vector.StrokePath(screen, &path, color.White, g.aa, op)
 
 	// Draw the center line in red.
 	if g.showCenter {
 		op.Width = 1
-		vs, is := path.AppendVerticesAndIndicesForStroke(g.vertices[:0], g.indices[:0], op)
-		for i := range vs {
-			vs[i].SrcX = 1
-			vs[i].SrcY = 1
-			vs[i].ColorR = 1
-			vs[i].ColorG = 0
-			vs[i].ColorB = 0
-			vs[i].ColorA = 1
-		}
-		screen.DrawTriangles(vs, is, whiteSubImage, &ebiten.DrawTrianglesOptions{
-			AntiAlias: g.aa,
-		})
+		vector.StrokePath(screen, &path, color.RGBA{0xff, 0, 0, 0xff}, g.aa, op)
 	}
 }
 

@@ -14,7 +14,6 @@
 
 //go:build ignore
 
-// Specify the 'pixel' mode.
 //kage:unit pixels
 
 package main

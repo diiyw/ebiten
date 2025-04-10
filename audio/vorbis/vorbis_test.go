@@ -137,6 +137,14 @@ func TestNonSeeker(t *testing.T) {
 	if got, want := s.SampleRate(), audioContext.SampleRate(); got != want {
 		t.Errorf("s.SampleRate(): got: %d, want: %d", got, want)
 	}
+
+	buf, err := io.ReadAll(s)
+	if err != nil {
+		t.Errorf("io.ReadAll: %v", err)
+	}
+	if len(buf) == 0 {
+		t.Errorf("len(buf): got: %d, want: > 0", len(buf))
+	}
 }
 
 func TestNonSeekerF32(t *testing.T) {
@@ -149,5 +157,13 @@ func TestNonSeekerF32(t *testing.T) {
 
 	if got, want := s.Length(), int64(0); got != want {
 		t.Errorf("s.Length(): got: %d, want: %d", got, want)
+	}
+
+	buf, err := io.ReadAll(s)
+	if err != nil {
+		t.Errorf("io.ReadAll: %v", err)
+	}
+	if len(buf) == 0 {
+		t.Errorf("len(buf): got: %d, want: > 0", len(buf))
 	}
 }

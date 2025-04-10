@@ -17,12 +17,14 @@ package main
 import (
 	"bytes"
 	_ "embed"
+	"fmt"
 	"image"
 	_ "image/png"
 	"log"
 
+	"github.com/ebitengine/debugui"
+
 	"github.com/hajimehoshi/ebiten/v2"
-	"github.com/hajimehoshi/ebiten/v2/ebitenutil"
 	resources "github.com/hajimehoshi/ebiten/v2/examples/resources/images/shader"
 	"github.com/hajimehoshi/ebiten/v2/inpututil"
 )
@@ -49,6 +51,17 @@ var (
 	//go:embed water.go
 	water_go []byte
 )
+
+// These directives are used for an shader analyzer in the future.
+// See also #3157.
+
+//ebitengine:shaderfile default.go
+//ebitengine:shaderfile texel.go
+//ebitengine:shaderfile lighting.go
+//ebitengine:shaderfile radialblur.go
+//ebitengine:shaderfile chromaticaberration.go
+//ebitengine:shaderfile dissolve.go
+//ebitengine:shaderfile water.go
 
 const (
 	screenWidth  = 640
@@ -106,20 +119,52 @@ var shaderSrcs = [][]byte{
 }
 
 type Game struct {
-	shaders map[int]*ebiten.Shader
-	idx     int
-	time    int
+	debugui debugui.DebugUI
+
+	shaders   map[int]*ebiten.Shader
+	idx       int
+	gamepadID ebiten.GamepadID
 }
 
 func (g *Game) Update() error {
-	g.time++
-	if inpututil.IsKeyJustPressed(ebiten.KeyArrowDown) {
-		g.idx++
-		g.idx %= len(shaderSrcs)
+	if g.gamepadID < 0 {
+		if ids := inpututil.AppendJustConnectedGamepadIDs(nil); len(ids) > 0 {
+			g.gamepadID = ids[0]
+		}
+	} else {
+		if inpututil.IsGamepadJustDisconnected(g.gamepadID) {
+			if ids := ebiten.AppendGamepadIDs(nil); len(ids) > 0 {
+				g.gamepadID = ids[0]
+			} else {
+				g.gamepadID = -1
+			}
+		}
 	}
-	if inpututil.IsKeyJustPressed(ebiten.KeyArrowUp) {
-		g.idx += len(shaderSrcs) - 1
-		g.idx %= len(shaderSrcs)
+
+	if _, err := g.debugui.Update(func(ctx *debugui.Context) error {
+		ctx.Window("Shader", image.Rect(10, 10, 210, 110), func(layout debugui.ContainerLayout) {
+			ctx.Text(fmt.Sprintf("%d / %d", g.idx+1, len(shaderSrcs)))
+			ctx.SetGridLayout([]int{-1, -1}, nil)
+			dec := func() {
+				g.idx += len(shaderSrcs) - 1
+				g.idx %= len(shaderSrcs)
+			}
+			ctx.Button("Prev").On(dec)
+			if inpututil.IsStandardGamepadButtonJustPressed(g.gamepadID, ebiten.StandardGamepadButtonLeftTop) {
+				dec()
+			}
+			inc := func() {
+				g.idx++
+				g.idx %= len(shaderSrcs)
+			}
+			ctx.Button("Next").On(inc)
+			if inpututil.IsStandardGamepadButtonJustPressed(g.gamepadID, ebiten.StandardGamepadButtonLeftBottom) {
+				inc()
+			}
+		})
+		return nil
+	}); err != nil {
+		return err
 	}
 
 	if g.shaders == nil {
@@ -146,7 +191,7 @@ func (g *Game) Draw(screen *ebiten.Image) {
 
 	op := &ebiten.DrawRectShaderOptions{}
 	op.Uniforms = map[string]any{
-		"Time":   float32(g.time) / 60,
+		"Time":   float32(ebiten.Tick()) / float32(ebiten.TPS()),
 		"Cursor": []float32{float32(cx), float32(cy)},
 	}
 	op.Images[0] = gopherImage
@@ -155,8 +200,7 @@ func (g *Game) Draw(screen *ebiten.Image) {
 	op.Images[3] = noiseImage
 	screen.DrawRectShader(w, h, s, op)
 
-	msg := "Press Up/Down to switch the shader."
-	ebitenutil.DebugPrint(screen, msg)
+	g.debugui.Draw(screen)
 }
 
 func (g *Game) Layout(outsideWidth, outsideHeight int) (int, int) {
@@ -166,7 +210,9 @@ func (g *Game) Layout(outsideWidth, outsideHeight int) (int, int) {
 func main() {
 	ebiten.SetWindowSize(screenWidth, screenHeight)
 	ebiten.SetWindowTitle("Shader (Ebitengine Demo)")
-	if err := ebiten.RunGame(&Game{}); err != nil {
+	if err := ebiten.RunGame(&Game{
+		gamepadID: -1,
+	}); err != nil {
 		log.Fatal(err)
 	}
 }

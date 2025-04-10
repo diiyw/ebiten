@@ -18,20 +18,19 @@ package textinput
 
 import (
 	"github.com/hajimehoshi/ebiten/v2"
-	"github.com/hajimehoshi/ebiten/v2/internal/ui"
 )
 
 type textInput struct {
 	rs       []rune
-	lastTick uint64
+	lastTick int64
 }
 
 var theTextInput textInput
 
-func (t *textInput) Start(x, y int) (chan State, func()) {
+func (t *textInput) Start(x, y int) (<-chan State, func()) {
 	// AppendInputChars is updated only when the tick is updated.
 	// If the tick is not updated, return nil immediately.
-	tick := ui.Get().Tick()
+	tick := ebiten.Tick()
 	if t.lastTick == tick {
 		return nil, nil
 	}

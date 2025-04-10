@@ -14,8 +14,18 @@
 
 package graphicscommand
 
+import (
+	"image"
+
+	"github.com/hajimehoshi/ebiten/v2/internal/graphics"
+)
+
 type WritePixelsCommandArgs = writePixelsCommandArgs
 
 func (i *Image) BufferedWritePixelsArgsForTesting() []WritePixelsCommandArgs {
 	return i.bufferedWritePixelsArgs
+}
+
+func PrependPreservedUniforms(uniforms []uint32, shader *Shader, dst *Image, srcs [graphics.ShaderSrcImageCount]*Image, dstRegion image.Rectangle, srcRegions [graphics.ShaderSrcImageCount]image.Rectangle) []uint32 {
+	return prependPreservedUniforms(uniforms, shader, dst, srcs, dstRegion, srcRegions)
 }

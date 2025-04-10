@@ -17,6 +17,7 @@
 package playstation5
 
 // #include "graphics_playstation5.h"
+// #include <stdlib.h>
 import "C"
 
 import (
@@ -28,6 +29,11 @@ import (
 	"github.com/hajimehoshi/ebiten/v2/internal/graphicsdriver"
 	"github.com/hajimehoshi/ebiten/v2/internal/shaderir"
 )
+
+//export ebitengine_ProjectionMatrixUniformDwordIndex
+func ebitengine_ProjectionMatrixUniformDwordIndex() C.int {
+	return C.int(graphics.ProjectionMatrixUniformDwordIndex)
+}
 
 type playstation5Error struct {
 	name    string
@@ -119,9 +125,15 @@ func (g *Graphics) MaxImageSize() int {
 }
 
 func (g *Graphics) NewShader(program *shaderir.Program) (graphicsdriver.Shader, error) {
+	s := precompiledShaders[program.SourceHash]
+	defer runtime.KeepAlive(s)
+
 	var id C.int
-	// TODO: Give a source code.
-	if err := C.ebitengine_NewShader(&id, nil); !C.ebitengine_IsErrorNil(&err) {
+	if err := C.ebitengine_NewShader(&id,
+		(*C.char)(unsafe.Pointer(unsafe.SliceData(s.vertexHeader))), C.int(len(s.vertexHeader)),
+		(*C.char)(unsafe.Pointer(unsafe.SliceData(s.vertexText))), C.int(len(s.vertexText)),
+		(*C.char)(unsafe.Pointer(unsafe.SliceData(s.pixelHeader))), C.int(len(s.pixelHeader)),
+		(*C.char)(unsafe.Pointer(unsafe.SliceData(s.pixelText))), C.int(len(s.pixelText))); !C.ebitengine_IsErrorNil(&err) {
 		return nil, newPlaystation5Error("(*playstation5.Graphics).NewShader", err)
 	}
 	return &Shader{

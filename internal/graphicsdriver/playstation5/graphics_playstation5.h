@@ -25,6 +25,8 @@
 extern "C" {
 #endif
 
+int ebitengine_ProjectionMatrixUniformDwordIndex();
+
 typedef struct ebitengine_Error {
   const char *message;
   int code;
@@ -52,23 +54,27 @@ typedef struct ebitengine_DstRegion {
 // kBlendFactor* and kBlendOperation* must be synced with
 // internal/graphicsdriver/blend.go.
 
-const uint8_t kBlendFactorZero = 0;
-const uint8_t kBlendFactorOne = 1;
-const uint8_t kBlendFactorSourceColor = 2;
-const uint8_t kBlendFactorOneMinusSourceColor = 3;
-const uint8_t kBlendFactorSourceAlpha = 4;
-const uint8_t kBlendFactorOneMinusSourceAlpha = 5;
-const uint8_t kBlendFactorDestinationColor = 6;
-const uint8_t kBlendFactorOneMinusDestinationColor = 7;
-const uint8_t kBlendFactorDestinationAlpha = 8;
-const uint8_t kBlendFactorOneMinusDestinationAlpha = 9;
-const uint8_t kBlendFactorSourceAlphaSaturated = 10;
+enum {
+  kBlendFactorZero = 0,
+  kBlendFactorOne = 1,
+  kBlendFactorSourceColor = 2,
+  kBlendFactorOneMinusSourceColor = 3,
+  kBlendFactorSourceAlpha = 4,
+  kBlendFactorOneMinusSourceAlpha = 5,
+  kBlendFactorDestinationColor = 6,
+  kBlendFactorOneMinusDestinationColor = 7,
+  kBlendFactorDestinationAlpha = 8,
+  kBlendFactorOneMinusDestinationAlpha = 9,
+  kBlendFactorSourceAlphaSaturated = 10,
+};
 
-const uint8_t kBlendOperationAdd = 0;
-const uint8_t kBlendOperationSubtract = 1;
-const uint8_t kBlendOperationReverseSubtract = 2;
-const uint8_t kBlendOperationMin = 3;
-const uint8_t kBlendOperationMax = 4;
+enum {
+  kBlendOperationAdd = 0,
+  kBlendOperationSubtract = 1,
+  kBlendOperationReverseSubtract = 2,
+  kBlendOperationMin = 3,
+  kBlendOperationMax = 4,
+};
 
 typedef struct ebitengine_Blend {
   uint8_t factor_src_rgb;
@@ -103,7 +109,10 @@ ebitengine_DrawTriangles(int dst, const int *srcs, int src_count, int shader,
                          ebitengine_Blend blend, const uint32_t *uniforms,
                          int uniform_count, int fill_rule);
 
-ebitengine_Error ebitengine_NewShader(int *shader, const char *source);
+ebitengine_Error ebitengine_NewShader(
+    int *shader, const char *vertex_header, int vertex_header_size,
+    const char *vertex_text, int vertex_text_size, const char *pixel_header,
+    int pixel_header_size, const char *pixel_text, int pixel_text_size);
 void ebitengine_DisposeShader(int id);
 
 #ifdef __cplusplus
