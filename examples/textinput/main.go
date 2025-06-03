@@ -22,7 +22,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/hajimehoshi/bitmapfont/v3"
+	"github.com/hajimehoshi/bitmapfont/v4"
 
 	"github.com/hajimehoshi/ebiten/v2"
 	"github.com/hajimehoshi/ebiten/v2/exp/textinput"
@@ -135,9 +135,11 @@ func (t *TextField) Update() error {
 	x, y := t.bounds.Min.X, t.bounds.Min.Y
 	cx, cy := t.cursorPos()
 	px, py := textFieldPadding()
-	x += cx + px
-	y += cy + py + int(fontFace.Metrics().HAscent)
-	handled, err := t.field.HandleInput(x, y)
+	x0 := x + cx + px
+	x1 := x0 + 1
+	y0 := y + cy + py
+	y1 := y0 + int(fontFace.Metrics().HLineGap+fontFace.Metrics().HAscent+fontFace.Metrics().HDescent)
+	handled, err := t.field.HandleInputWithBounds(image.Rect(x0, y0, x1, y1))
 	if err != nil {
 		return err
 	}
@@ -325,7 +327,9 @@ func (g *Game) Layout(outsideWidth, outsideHeight int) (int, int) {
 func main() {
 	ebiten.SetWindowSize(screenWidth, screenHeight)
 	ebiten.SetWindowTitle("Text Input (Ebitengine Demo)")
-	if err := ebiten.RunGame(&Game{}); err != nil {
+	op := &ebiten.RunGameOptions{}
+	op.ApplePressAndHoldEnabled = true
+	if err := ebiten.RunGameWithOptions(&Game{}, op); err != nil {
 		log.Fatal(err)
 	}
 }

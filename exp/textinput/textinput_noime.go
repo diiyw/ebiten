@@ -17,6 +17,8 @@
 package textinput
 
 import (
+	"image"
+
 	"github.com/hajimehoshi/ebiten/v2"
 )
 
@@ -27,7 +29,7 @@ type textInput struct {
 
 var theTextInput textInput
 
-func (t *textInput) Start(x, y int) (<-chan State, func()) {
+func (t *textInput) Start(bounds image.Rectangle) (<-chan textInputState, func()) {
 	// AppendInputChars is updated only when the tick is updated.
 	// If the tick is not updated, return nil immediately.
 	tick := ebiten.Tick()
@@ -46,7 +48,7 @@ func (t *textInput) Start(x, y int) (<-chan State, func()) {
 	if len(t.rs) == 0 {
 		return nil, nil
 	}
-	s.ch <- State{
+	s.ch <- textInputState{
 		Text:      string(t.rs),
 		Committed: true,
 	}

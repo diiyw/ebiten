@@ -15,6 +15,7 @@
 package textinput
 
 import (
+	"image"
 	"sync"
 	"unsafe"
 
@@ -41,7 +42,7 @@ type textInput struct {
 
 var theTextInput textInput
 
-func (t *textInput) Start(x, y int) (<-chan State, func()) {
+func (t *textInput) Start(bounds image.Rectangle) (<-chan textInputState, func()) {
 	if microsoftgdk.IsXbox() {
 		return nil, nil
 	}
@@ -50,12 +51,12 @@ func (t *textInput) Start(x, y int) (<-chan State, func()) {
 	var err error
 	ui.Get().RunOnMainThread(func() {
 		t.end()
-		err = t.start(x, y)
+		err = t.start(bounds)
 		session = newSession()
 		t.session = session
 	})
 	if err != nil {
-		session.ch <- State{Error: err}
+		session.ch <- textInputState{Error: err}
 		session.end()
 	}
 	return session.ch, func() {
@@ -76,7 +77,7 @@ func (t *textInput) Start(x, y int) (<-chan State, func()) {
 }
 
 // start must be called from the main thread.
-func (t *textInput) start(x, y int) error {
+func (t *textInput) start(bounds image.Rectangle) error {
 	if t.err != nil {
 		return t.err
 	}
@@ -117,8 +118,14 @@ func (t *textInput) start(x, y int) error {
 		dwIndex: 0,
 		dwStyle: _CFS_CANDIDATEPOS,
 		ptCurrentPos: _POINT{
-			x: int32(x),
-			y: int32(y),
+			x: int32(bounds.Min.X),
+			y: int32(bounds.Max.Y),
+		},
+		rcArea: _RECT{
+			left:   int32(bounds.Min.X),
+			top:    int32(bounds.Max.Y),
+			right:  int32(bounds.Max.X),
+			bottom: int32(bounds.Max.Y),
 		},
 	}); err != nil {
 		return err
@@ -144,13 +151,13 @@ func (t *textInput) wndProc(hWnd uintptr, uMsg uint32, wParam, lParam uintptr) u
 		if lParam&(_GCS_RESULTSTR|_GCS_COMPSTR) != 0 {
 			if lParam&_GCS_RESULTSTR != 0 {
 				if err := t.commit(); err != nil {
-					t.session.ch <- State{Error: err}
+					t.session.ch <- textInputState{Error: err}
 					t.end()
 				}
 			}
 			if lParam&_GCS_COMPSTR != 0 {
 				if err := t.update(); err != nil {
-					t.session.ch <- State{Error: err}
+					t.session.ch <- textInputState{Error: err}
 					t.end()
 				}
 			}
@@ -194,7 +201,7 @@ func (t *textInput) wndProc(hWnd uintptr, uMsg uint32, wParam, lParam uintptr) u
 // send must be called from the main thread.
 func (t *textInput) send(text string, startInBytes, endInBytes int, committed bool) {
 	if t.session != nil {
-		t.session.trySend(State{
+		t.session.trySend(textInputState{
 			Text:                             text,
 			CompositionSelectionStartInBytes: startInBytes,
 			CompositionSelectionEndInBytes:   endInBytes,

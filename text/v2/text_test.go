@@ -16,16 +16,19 @@ package text_test
 
 import (
 	"bytes"
+	"fmt"
 	"image"
 	"image/color"
 	"math"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
-	"github.com/hajimehoshi/bitmapfont/v3"
+	"github.com/hajimehoshi/bitmapfont/v4"
 	"golang.org/x/image/font"
 	"golang.org/x/image/font/opentype"
 	"golang.org/x/image/math/fixed"
@@ -473,5 +476,119 @@ func TestCollection(t *testing.T) {
 				}, nil)
 			}
 		})
+	}
+}
+
+func TestLines(t *testing.T) {
+	testCases := []struct {
+		In  string
+		Out []string
+	}{
+		{
+			In:  "",
+			Out: nil,
+		},
+		{
+			In:  "\n",
+			Out: []string{"\n"},
+		},
+		{
+			In:  "aaa\nbbb\nccc",
+			Out: []string{"aaa\n", "bbb\n", "ccc"},
+		},
+		{
+			In:  "aaa\nbbb\nccc\n",
+			Out: []string{"aaa\n", "bbb\n", "ccc\n"},
+		},
+		{
+			In:  "aaa\u0085bbb\r\nccc\rddd\u2028eee",
+			Out: []string{"aaa\u0085", "bbb\r\n", "ccc\r", "ddd\u2028", "eee"},
+		},
+	}
+	for _, tc := range testCases {
+		t.Run(fmt.Sprintf("%q", tc.In), func(t *testing.T) {
+			got := slices.Collect(text.Lines(tc.In))
+			want := tc.Out
+			if len(got) != len(want) {
+				t.Errorf("len(got): %d, len(want): %d", len(got), len(want))
+			}
+			for i := range got {
+				if got[i] != want[i] {
+					t.Errorf("got[%d]: %q, want[%d]: %q", i, got[i], i, want[i])
+				}
+			}
+		})
+	}
+}
+
+func TestTrimTailingLineBreak(t *testing.T) {
+	testCases := []struct {
+		In  string
+		Out string
+	}{
+		{
+			In:  "",
+			Out: "",
+		},
+		{
+			In:  "aaa",
+			Out: "aaa",
+		},
+		{
+			In:  "aaa\n",
+			Out: "aaa",
+		},
+		{
+			In:  "aaa\n\n",
+			Out: "aaa\n",
+		},
+		{
+			In:  "aaa\r\n",
+			Out: "aaa",
+		},
+		{
+			In:  "aaa\r",
+			Out: "aaa",
+		},
+		{
+			In:  "aaa\u0085",
+			Out: "aaa",
+		},
+		{
+			In:  "aaa\u0085\u2028",
+			Out: "aaa\u0085",
+		},
+		{
+			In:  "aaa\nbbb\n",
+			Out: "aaa\nbbb",
+		},
+	}
+	for _, tc := range testCases {
+		t.Run(fmt.Sprintf("%q", tc.In), func(t *testing.T) {
+			got := text.TrimTailingLineBreak(tc.In)
+			want := tc.Out
+			if got != want {
+				t.Errorf("got: %q, want: %q", got, want)
+			}
+		})
+	}
+}
+
+func TestRuneToBoolMap(t *testing.T) {
+	var rtb text.RuneToBoolMap
+	m := map[rune]bool{}
+	for range 0x100000 {
+		r := rune(rand.IntN(0x10000))
+		gotVal, gotOK := rtb.Get(r)
+		wantVal, wantOK := m[r]
+		if gotVal != wantVal || gotOK != wantOK {
+			t.Fatalf("rune: %c, got: %v, %v; want: %v, %v", r, gotVal, gotOK, wantVal, wantOK)
+		}
+		v := rand.IntN(2)
+		m[r] = v != 0
+		rtb.Set(r, v != 0)
+		if gotVal, gotOK := rtb.Get(r); gotVal != (v != 0) || !gotOK {
+			t.Fatalf("rune: %c, got: %v, %v; want: %v, %v", r, gotVal, gotOK, v != 0, true)
+		}
 	}
 }

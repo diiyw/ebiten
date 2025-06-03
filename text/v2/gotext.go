@@ -232,8 +232,8 @@ func (g *GoTextFace) outputCacheKey(text string) goTextOutputCacheKey {
 		text:       text,
 		direction:  g.Direction,
 		size:       g.Size,
-		language:   g.Language.String(),
-		script:     g.Script.String(),
+		language:   g.Language,
+		script:     g.Script,
 		variations: g.ensureVariationsString(),
 		features:   g.ensureFeaturesString(),
 	}
@@ -282,8 +282,7 @@ func (g *GoTextFace) advance(text string) float64 {
 
 // hasGlyph implements Face.
 func (g *GoTextFace) hasGlyph(r rune) bool {
-	_, ok := g.Source.f.Cmap.Lookup(r)
-	return ok
+	return g.Source.hasGlyph(r)
 }
 
 // appendGlyphsForLine implements Face.

@@ -24,6 +24,7 @@ import (
 	"github.com/go-text/typesetting/language"
 	"github.com/go-text/typesetting/shaping"
 	"golang.org/x/image/math/fixed"
+	xlanguage "golang.org/x/text/language"
 
 	"github.com/hajimehoshi/ebiten/v2"
 )
@@ -32,8 +33,8 @@ type goTextOutputCacheKey struct {
 	text       string
 	direction  Direction
 	size       float64
-	language   string
-	script     string
+	language   xlanguage.Tag
+	script     xlanguage.Script
 	variations string
 	features   string
 }
@@ -58,6 +59,41 @@ type goTextGlyphImageCacheKey struct {
 	variations string
 }
 
+// runeToBoolMap is a map from rune to bool with performance optimizations.
+type runeToBoolMap struct {
+	m []uint64
+}
+
+func (r *runeToBoolMap) get(rune rune) (value bool, ok bool) {
+	index := rune / 32
+	if len(r.m) <= int(index) {
+		return false, false
+	}
+	shift := 2 * (rune % 32)
+	v := r.m[index] >> shift
+	return v&0b10 != 0, v&0b01 != 0
+}
+
+func (r *runeToBoolMap) set(rune rune, value bool) {
+	index := rune / 32
+	if len(r.m) <= int(index) {
+		r.m = slices.Grow(r.m, int(index)+1)[:index+1]
+	}
+	shift := 2 * (rune % 32)
+	if value {
+		r.m[index] |= 0b11 << shift
+	} else {
+		r.m[index] |= 0b01 << shift
+		r.m[index] &^= 0b10 << shift
+	}
+}
+
+type glyphDataCacheKey struct {
+	gid        font.GID
+	variations string
+	sideways   bool
+}
+
 // GoTextFaceSource is a source of a GoTextFace. This can be shared by multiple GoTextFace objects.
 type GoTextFaceSource struct {
 	f        *font.Face
@@ -65,12 +101,16 @@ type GoTextFaceSource struct {
 
 	outputCache     *cache[goTextOutputCacheKey, goTextOutputCacheValue]
 	glyphImageCache map[float64]*cache[goTextGlyphImageCacheKey, *ebiten.Image]
+	hasGlyphCache   runeToBoolMap
 
 	unscaledMetrics Metrics
 
 	addr *GoTextFaceSource
 
 	shaper shaping.HarfbuzzShaper
+
+	runes          []rune
+	glyphDataCache *cache[glyphDataCacheKey, font.GlyphData]
 }
 
 func toFontResource(source io.Reader) (font.Resource, error) {
@@ -98,6 +138,8 @@ func newGoTextFaceSource(face *font.Face) *GoTextFaceSource {
 	s.addr = s
 	s.metadata = metadataFromFace(face)
 	s.outputCache = newCache[goTextOutputCacheKey, goTextOutputCacheValue](512)
+	// 4 is an arbitrary number, which should not cause troubles.
+	s.shaper.SetFontCacheSize(4)
 	return s
 }
 
@@ -184,11 +226,14 @@ func (g *GoTextFaceSource) shape(text string, face *GoTextFace) ([]shaping.Outpu
 func (g *GoTextFaceSource) shapeImpl(text string, face *GoTextFace) ([]shaping.Output, []glyph) {
 	g.f.SetVariations(face.variations)
 
-	runes := []rune(text)
+	g.runes = g.runes[:0]
+	for _, r := range text {
+		g.runes = append(g.runes, r)
+	}
 	input := shaping.Input{
-		Text:         runes,
+		Text:         g.runes,
 		RunStart:     0,
-		RunEnd:       len(runes),
+		RunEnd:       len(g.runes),
 		Direction:    face.diDirection(),
 		Face:         g.f,
 		FontFeatures: face.features,
@@ -222,11 +267,26 @@ func (g *GoTextFaceSource) shapeImpl(text string, face *GoTextFace) ([]shaping.O
 		for _, gl := range out.Glyphs {
 			gl := gl
 			var segs []opentype.Segment
-			switch data := g.f.GlyphData(gl.GlyphID).(type) {
-			case font.GlyphOutline:
-				if out.Direction.IsSideways() {
+			if g.glyphDataCache == nil {
+				g.glyphDataCache = newCache[glyphDataCacheKey, font.GlyphData](512)
+			}
+			key := glyphDataCacheKey{
+				gid:        gl.GlyphID,
+				variations: face.ensureVariationsString(),
+				sideways:   out.Direction.IsSideways(),
+			}
+			data := g.glyphDataCache.getOrCreate(key, func() (font.GlyphData, bool) {
+				data := g.f.GlyphData(gl.GlyphID)
+				if data == nil {
+					return nil, false
+				}
+				if data, ok := data.(font.GlyphOutline); ok && out.Direction.IsSideways() {
 					data.Sideways(fixed26_6ToFloat32(-gl.YOffset) / fixed26_6ToFloat32(out.Size) * float32(g.f.Upem()))
 				}
+				return data, true
+			})
+			switch data := data.(type) {
+			case font.GlyphOutline:
 				segs = data.Segments
 			case font.GlyphSVG:
 				segs = data.Outline.Segments
@@ -300,6 +360,15 @@ func (g *GoTextFaceSource) metrics(size float64) Metrics {
 		XHeight:   um.XHeight * scale,
 		CapHeight: um.CapHeight * scale,
 	}
+}
+
+func (g *GoTextFaceSource) hasGlyph(r rune) bool {
+	if has, ok := g.hasGlyphCache.get(r); ok {
+		return has
+	}
+	_, ok := g.f.Cmap.Lookup(r)
+	g.hasGlyphCache.set(r, ok)
+	return ok
 }
 
 type singleFontmap struct {

@@ -15,6 +15,7 @@
 package textinput
 
 import (
+	"image"
 	"sync"
 )
 
@@ -63,6 +64,16 @@ func isFieldFocused(f *Field) bool {
 	return theFocusedField == f
 }
 
+func currentState() (string, int, int, textInputState, bool) {
+	theFocusedFieldM.Lock()
+	defer theFocusedFieldM.Unlock()
+	if theFocusedField == nil {
+		return "", 0, 0, textInputState{}, false
+	}
+	f := theFocusedField
+	return f.text, f.selectionStartInBytes, f.selectionEndInBytes, f.state, true
+}
+
 // Field is a region accepting text inputting with IME.
 //
 // Field is not focused by default. You have to call Focus when you start text inputting.
@@ -75,9 +86,9 @@ type Field struct {
 	selectionStartInBytes int
 	selectionEndInBytes   int
 
-	ch    <-chan State
+	ch    <-chan textInputState
 	end   func()
-	state State
+	state textInputState
 	err   error
 }
 
@@ -89,7 +100,23 @@ type Field struct {
 // If HandleInput returns true, a Field user should not handle further input events.
 //
 // HandleInput returns an error when handling input causes an error.
+//
+// Deprecated: use HandleInputWithBounds instead.
 func (f *Field) HandleInput(x, y int) (handled bool, err error) {
+	return f.HandleInputWithBounds(image.Rect(x, y, x+1, y+1))
+}
+
+// HandleInputWithBounds updates the field state.
+// HandleInputWithBounds must be called every tick, i.e., every Update, when Field is focused.
+// HandleInputWithBounds takes a character bounds, which decides the position where an IME window is shown if needed.
+// The bounds width doesn't matter very much as long as it is greater than 0.
+// The bounds height should be the text height like a cursor height.
+//
+// HandleInputWithBounds returns whether the text inputting is handled or not.
+// If HandleInputWithBounds returns true, a Field user should not handle further input events.
+//
+// HandleInputWithBounds returns an error when handling input causes an error.
+func (f *Field) HandleInputWithBounds(bounds image.Rectangle) (handled bool, err error) {
 	if f.err != nil {
 		return false, f.err
 	}
@@ -103,7 +130,7 @@ func (f *Field) HandleInput(x, y int) (handled bool, err error) {
 		if f.ch == nil {
 			// TODO: On iOS Safari, Start doesn't work as expected (#2898).
 			// Handle a click event and focus the textarea there.
-			f.ch, f.end = Start(x, y)
+			f.ch, f.end = start(bounds)
 			// Start returns nil for non-supported envrionments, or when unable to start text inputting for some reasons.
 			if f.ch == nil {
 				return handled, nil
@@ -121,15 +148,17 @@ func (f *Field) HandleInput(x, y int) (handled bool, err error) {
 				if !ok {
 					f.ch = nil
 					f.end = nil
-					f.state = State{}
+					f.state = textInputState{}
 					break readchar
+				}
+				if state.Committed && state.Text == "\x7f" {
+					// DEL should not modify the text (#3212).
+					f.state = textInputState{}
+					continue
 				}
 				handled = true
 				if state.Committed {
-					f.text = f.text[:f.selectionStartInBytes] + state.Text + f.text[f.selectionEndInBytes:]
-					f.selectionStartInBytes += len(state.Text)
-					f.selectionEndInBytes = f.selectionStartInBytes
-					f.state = State{}
+					f.commit(state)
 					continue
 				}
 				f.state = state
@@ -146,6 +175,25 @@ func (f *Field) HandleInput(x, y int) (handled bool, err error) {
 	}
 
 	return
+}
+
+func (f *Field) commit(state textInputState) {
+	if !state.Committed {
+		panic("textinput: commit must be called with committed state")
+	}
+	if state.DeleteEndInBytes-state.DeleteStartInBytes > 0 {
+		if f.selectionStartInBytes > state.DeleteStartInBytes {
+			f.selectionStartInBytes -= state.DeleteEndInBytes - state.DeleteStartInBytes
+		}
+		if f.selectionEndInBytes > state.DeleteStartInBytes {
+			f.selectionEndInBytes -= state.DeleteEndInBytes - state.DeleteStartInBytes
+		}
+		f.text = f.text[:state.DeleteStartInBytes] + f.text[state.DeleteEndInBytes:]
+	}
+	f.text = f.text[:f.selectionStartInBytes] + state.Text + f.text[f.selectionEndInBytes:]
+	f.selectionStartInBytes += len(state.Text)
+	f.selectionEndInBytes = f.selectionStartInBytes
+	f.state = textInputState{}
 }
 
 // Focus focuses the field.
@@ -181,12 +229,10 @@ func (f *Field) cleanUp() {
 				return
 			}
 			if ok && state.Committed {
-				f.text = f.text[:f.selectionStartInBytes] + state.Text + f.text[f.selectionEndInBytes:]
-				f.selectionStartInBytes += len(state.Text)
-				f.selectionEndInBytes = f.selectionStartInBytes
-				f.state = State{}
+				f.commit(state)
+			} else {
+				f.state = state
 			}
-			f.state = state
 		default:
 			break
 		}
@@ -196,7 +242,7 @@ func (f *Field) cleanUp() {
 		f.end()
 		f.ch = nil
 		f.end = nil
-		f.state = State{}
+		f.state = textInputState{}
 	}
 }
 

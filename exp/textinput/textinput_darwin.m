@@ -18,29 +18,38 @@
 
 #import <Cocoa/Cocoa.h>
 
-void ebitengine_textinput_update(const char* text, int start, int end, BOOL committed);
+int ebitengine_textinput_hasMarkedText();
+void ebitengine_textinput_markedRange(int64_t* start, int64_t* length);
+void ebitengine_textinput_selectedRange(int64_t* start, int64_t* length);
+void ebitengine_textinput_unmarkText();
+void ebitengine_textinput_setMarkedText(const char* text, int64_t selectionStart, int64_t selectionLen, int64_t replaceStart, int64_t replaceLen);
+void ebitengine_textinput_insertText(const char* text, int64_t replaceStart, int64_t replaceLen);
+NSRect ebitengine_textinput_firstRectForCharacterRange(uintptr_t self, NSRange range, NSRangePointer actualRange);
 void ebitengine_textinput_end();
 
 @interface TextInputClient : NSView<NSTextInputClient>
 {
-  NSString* markedText_;
-  NSRange markedRange_;
-  NSRange selectedRange_;
 }
 @end
 
 @implementation TextInputClient
 
 - (BOOL)hasMarkedText {
-  return markedText_ != nil;
+  return ebitengine_textinput_hasMarkedText() != 0;
 }
 
 - (NSRange)markedRange {
-  return markedRange_;
+  int64_t start = 0;
+  int64_t length = 0;
+  ebitengine_textinput_markedRange(&start, &length);
+  return NSMakeRange(start, length);
 }
 
 - (NSRange)selectedRange {
-  return selectedRange_;
+  int64_t start = 0;
+  int64_t length = 0;
+  ebitengine_textinput_selectedRange(&start, &length);
+  return NSMakeRange(start, length);
 }
 
 - (void)setMarkedText:(id)string 
@@ -49,14 +58,11 @@ void ebitengine_textinput_end();
   if ([string isKindOfClass:[NSAttributedString class]]) {
     string = [string string];
   }
-  markedText_ = string;
-  selectedRange_ = selectedRange;
-  markedRange_ = NSMakeRange(0, [string length]);
-  ebitengine_textinput_update([string UTF8String], selectedRange.location, selectedRange.location + selectedRange.length, NO);
+  ebitengine_textinput_setMarkedText([string UTF8String], selectedRange.location, selectedRange.length, replacementRange.location, replacementRange.length);
 }
 
 - (void)unmarkText {
-  markedText_ = nil;
+  ebitengine_textinput_unmarkText();
 }
 
 - (NSArray<NSAttributedStringKey> *)validAttributesForMarkedText {
@@ -76,7 +82,7 @@ void ebitengine_textinput_end();
   if ([string length] == 1 && [string characterAtIndex:0] < 0x20) {
     return;
   }
-  ebitengine_textinput_update([string UTF8String], 0, [string length], YES);
+  ebitengine_textinput_insertText([string UTF8String], replacementRange.location, replacementRange.length);
 }
 
 - (NSUInteger)characterIndexForPoint:(NSPoint)point {
@@ -86,8 +92,7 @@ void ebitengine_textinput_end();
 
 - (NSRect)firstRectForCharacterRange:(NSRange)range 
                          actualRange:(NSRangePointer)actualRange {
-  NSWindow* window = [self window];
-  return [window convertRectToScreen:[self frame]];
+  return ebitengine_textinput_firstRectForCharacterRange((uintptr_t)(self), range, actualRange);
 }
 
 - (void)doCommandBySelector:(SEL)selector {
