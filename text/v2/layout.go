@@ -15,7 +15,11 @@
 package text
 
 import (
+	"slices"
+	"sync"
+
 	"github.com/hajimehoshi/ebiten/v2"
+	"github.com/hajimehoshi/ebiten/v2/text/v2/internal/textutil"
 	"github.com/hajimehoshi/ebiten/v2/vector"
 )
 
@@ -59,6 +63,15 @@ type LayoutOptions struct {
 	// and the horizontal direction for a vertical-direction face.
 	// The meaning of the start and the end depends on the face direction.
 	SecondaryAlign Align
+}
+
+var theDrawGlyphsPool = sync.Pool{
+	New: func() any {
+		// 64 is an arbitrary number for the initial capacity.
+		s := make([]Glyph, 0, 64)
+		// Return a pointer instead of a slice, or go-vet warns at Put.
+		return &s
+	},
 }
 
 // Draw draws a given text on a given destination image dst.
@@ -111,7 +124,15 @@ func Draw(dst *ebiten.Image, text string, face Face, options *DrawOptions) {
 
 	geoM := drawOp.GeoM
 
-	for _, g := range AppendGlyphs(nil, text, face, &layoutOp) {
+	glyphs := theDrawGlyphsPool.Get().(*[]Glyph)
+	defer func() {
+		// Clear the content to avoid memory leaks.
+		// The capacity is kept so that the next call to Draw can reuse it.
+		*glyphs = slices.Delete(*glyphs, 0, len(*glyphs))
+		theDrawGlyphsPool.Put(glyphs)
+	}()
+	*glyphs = AppendGlyphs((*glyphs)[:0], text, face, &layoutOp)
+	for _, g := range *glyphs {
 		if g.Image == nil {
 			continue
 		}
@@ -169,9 +190,9 @@ func forEachLine(text string, face Face, options *LayoutOptions, f func(text str
 	var advances []float64
 	var longestAdvance float64
 	var lineCount int
-	for line := range lines(text) {
+	for line := range textutil.Lines(text) {
 		lineCount++
-		a := face.advance(trimTailingLineBreak(line))
+		a := face.advance(textutil.TrimTailingLineBreak(line))
 		advances = append(advances, a)
 		longestAdvance = max(longestAdvance, a)
 	}
@@ -228,7 +249,7 @@ func forEachLine(text string, face Face, options *LayoutOptions, f func(text str
 	var indexOffset int
 	var originX, originY float64
 	var i int
-	for line := range lines(text) {
+	for line := range textutil.Lines(text) {
 		// Adjust the origin position based on the primary alignments.
 		switch d {
 		case DirectionLeftToRight, DirectionRightToLeft:
@@ -251,7 +272,7 @@ func forEachLine(text string, face Face, options *LayoutOptions, f func(text str
 			}
 		}
 
-		line = trimTailingLineBreak(line)
+		line = textutil.TrimTailingLineBreak(line)
 		f(line, indexOffset, originX+offsetX, originY+offsetY)
 
 		indexOffset += len(line) + 1

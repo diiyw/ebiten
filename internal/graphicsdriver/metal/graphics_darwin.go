@@ -125,7 +125,6 @@ func (g *Graphics) Begin() error {
 
 func (g *Graphics) End(present bool) error {
 	g.flushIfNeeded(present)
-	g.screenDrawable = ca.MetalDrawable{}
 	g.pool.Release()
 	g.pool.ID = 0
 	return nil
@@ -236,14 +235,9 @@ func (g *Graphics) flushIfNeeded(present bool) {
 
 	g.flushRenderCommandEncoderIfNeeded()
 
-	if present {
-		// This check is necessary when skipping to render the screen (SetScreenClearedEveryFrame(false)).
-		if g.screenDrawable == (ca.MetalDrawable{}) && g.cb != (mtl.CommandBuffer{}) {
-			g.screenDrawable = g.view.nextDrawable()
-		}
-		if g.screenDrawable != (ca.MetalDrawable{}) {
-			g.cb.PresentDrawable(g.screenDrawable)
-		}
+	if present && g.screenDrawable != (ca.MetalDrawable{}) {
+		g.cb.PresentDrawable(g.screenDrawable)
+		g.screenDrawable = ca.MetalDrawable{}
 	}
 
 	g.cb.Commit()
@@ -833,6 +827,7 @@ func (i *Image) mtlTexture() mtl.Texture {
 	if i.screen {
 		g := i.graphics
 		if g.screenDrawable == (ca.MetalDrawable{}) {
+			i.graphics.view.waitForDisplayLinkOutputCallback()
 			drawable := g.view.nextDrawable()
 			if drawable == (ca.MetalDrawable{}) {
 				return mtl.Texture{}
@@ -881,9 +876,16 @@ func adjustUniformVariablesLayout(uniformTypes []shaderir.Type, uniforms []uint3
 	}
 
 	var idx int
+	var byteAlign int
 	for i, typ := range uniformTypes {
 		n := typ.DwordCount()
 		switch typ.Main {
+		case shaderir.Bool:
+			if byteAlign == 0 {
+				values = append(values, uniforms[idx:idx+1]...)
+			} else {
+				values[len(values)-1] |= uniforms[idx] << (8 * byteAlign)
+			}
 		case shaderir.Float, shaderir.Int:
 			values = append(values, uniforms[idx:idx+n]...)
 		case shaderir.Vec2, shaderir.IVec2:
@@ -925,6 +927,14 @@ func adjustUniformVariablesLayout(uniformTypes []shaderir.Type, uniforms []uint3
 			}
 		case shaderir.Array:
 			switch typ.Sub[0].Main {
+			case shaderir.Bool:
+				for i := range n {
+					if (i+byteAlign)%4 == 0 {
+						values = append(values, uniforms[idx+i])
+					} else {
+						values[len(values)-1] |= uniforms[idx+i] << (8 * ((i + byteAlign) % 4))
+					}
+				}
 			case shaderir.Float, shaderir.Int:
 				values = append(values, uniforms[idx:idx+n]...)
 			case shaderir.Vec2, shaderir.IVec2:
@@ -963,6 +973,13 @@ func adjustUniformVariablesLayout(uniformTypes []shaderir.Type, uniforms []uint3
 		}
 
 		idx += n
+
+		if typ.Main == shaderir.Bool || (typ.Main == shaderir.Array && typ.Sub[0].Main == shaderir.Bool) {
+			byteAlign += n
+			byteAlign %= 4
+		} else {
+			byteAlign = 0
+		}
 	}
 
 	return values

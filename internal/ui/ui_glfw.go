@@ -1904,7 +1904,13 @@ func (u *UserInterface) currentMonitor() (*Monitor, error) {
 		return m, nil
 	}
 
-	return theMonitors.primaryMonitor(), nil
+	if m := theMonitors.primaryMonitor(); m != nil {
+		return m, nil
+	}
+
+	// The primiary monitor might be missing even after the initialization (#3094, #3241).
+	// The reason is still unknown. As a workaround, return the initial monitor.
+	return u.getInitMonitor(), nil
 }
 
 func (u *UserInterface) readInputState(inputState *InputState) {

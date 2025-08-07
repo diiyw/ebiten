@@ -16,14 +16,22 @@
 
 package metal
 
+// #include <CoreVideo/CVDisplayLink.h>
+//
+// int ebitengine_DisplayLinkOutputCallback(CVDisplayLinkRef displayLinkRef, CVTimeStamp* inNow, CVTimeStamp* inOutputTime, uint64_t flagsIn, uint64_t* flagsOut, void* displayLinkContext);
+import "C"
+
 import (
-	"runtime"
+	"runtime/cgo"
+	"unsafe"
 
 	"github.com/ebitengine/purego/objc"
 
 	"github.com/hajimehoshi/ebiten/v2/internal/cocoa"
 	"github.com/hajimehoshi/ebiten/v2/internal/graphicsdriver/metal/mtl"
 )
+
+const kCVReturnSuccess = 0
 
 func (v *view) setWindow(window uintptr) {
 	// NSView can be updated e.g., fullscreen-state is switched.
@@ -36,7 +44,7 @@ func (v *view) setUIView(uiview uintptr) {
 }
 
 func (v *view) update() {
-	v.ml.SetMaximumDrawableCount(v.maximumDrawableCount())
+	v.ml.SetMaximumDrawableCount(maximumDrawableCount)
 
 	if !v.windowChanged {
 		return
@@ -55,25 +63,39 @@ const (
 	resourceStorageMode = mtl.ResourceStorageModeManaged
 )
 
-func (v *view) maximumDrawableCount() int {
-	// Note that the architecture might not be the true reason of the issues (#2880, #2883).
-	// Hajime tested only MacBook Pro 2020 (Intel) and MacBook Pro 2023 (M3).
+func (v *view) initializeDisplayLink() {
+	v.fence = newFence()
 
-	// Use 3 for Intel Mac and iOS. With 2, There are some situations that the FPS becomes half, or the FPS becomes too low (#2880).
-	if runtime.GOARCH == "amd64" {
-		return 3
+	// TODO: CVDisplayLink APIs are deprecated in macOS 10.15 and later.
+	// Use new APIs like NSView.displayLink(target:selector:).
+	var displayLinkRef C.CVDisplayLinkRef
+	if ret := C.CVDisplayLinkCreateWithActiveCGDisplays(&displayLinkRef); ret != kCVReturnSuccess {
+		// Failed to get the display link, so proceed without it.
+		return
 	}
+	v.handleToSelf = cgo.NewHandle(v)
+	C.CVDisplayLinkSetOutputCallback(displayLinkRef, C.CVDisplayLinkOutputCallback(C.ebitengine_DisplayLinkOutputCallback), unsafe.Pointer(&v.handleToSelf))
+	C.CVDisplayLinkStart(displayLinkRef)
 
-	// Use 3 in fullscren.
-	// Though this might degrade FPS, this is necessary to avoid mysterious rendering delays.
-	if v.isFullscreen() {
-		return 3
-	}
-
-	// Use 2 for a Wnidow to avoid mysterious blinking (#2883).
-	return 2
+	v.displayLink = uintptr(displayLinkRef)
 }
 
-func (v *view) isFullscreen() bool {
-	return cocoa.NSWindow{ID: objc.ID(v.window)}.StyleMask()&cocoa.NSWindowStyleMaskFullScreen != 0
+func (v *view) waitForDisplayLinkOutputCallback() {
+	if v.displayLink == 0 {
+		return
+	}
+	if v.vsyncDisabled {
+		// TODO: nextDrawable still waits for the next drawable available, so this should be fixed not to wait.
+		return
+	}
+
+	v.fence.wait()
+}
+
+//export ebitengine_DisplayLinkOutputCallback
+func ebitengine_DisplayLinkOutputCallback(displayLinkRef C.CVDisplayLinkRef, inNow, inOutputTime *C.CVTimeStamp, flagsIn C.uint64_t, flagsOut *C.uint64_t, displayLinkContext unsafe.Pointer) C.int {
+	cgoHandle := (*cgo.Handle)(displayLinkContext)
+	view := cgoHandle.Value().(*view)
+	view.fence.advance()
+	return 0
 }

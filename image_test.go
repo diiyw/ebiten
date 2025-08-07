@@ -23,7 +23,9 @@ import (
 	_ "image/png"
 	"math"
 	"math/rand/v2"
+	"reflect"
 	"runtime"
+	"sync"
 	"testing"
 
 	"github.com/hajimehoshi/ebiten/v2"
@@ -860,7 +862,11 @@ func TestImageCopy(t *testing.T) {
 	}()
 
 	img0 := ebiten.NewImage(256, 256)
-	img1 := *img0
+	var img1 ebiten.Image
+	// This is the same as `img1 = *img0`, but go-vet complains about it.
+	// Use reflect to avoid the go-vet warning.
+	// See also https://cs.opensource.google/go/go/+/refs/tags/go1.24.4:src/sync/cond_test.go;drc=4a3071696ddfb13e1a8f35f76197b7b3143492f4
+	reflect.ValueOf(&img1).Elem().Set(reflect.ValueOf(img0).Elem())
 	img1.Fill(color.Transparent)
 }
 
@@ -4807,4 +4813,69 @@ func Fragment(dstPos vec4, srcPos vec2, color vec4) vec4 {
 			}
 		}
 	}
+}
+
+// Issue #3267
+func TestSubImageRaceConditionWithFill(t *testing.T) {
+	const w, h = 16, 16
+	img := ebiten.NewImage(w, h)
+
+	subImages := make(chan *ebiten.Image)
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	// Create a goroutine to create sub-images.
+	go func() {
+		for i := 0; i < h; i++ {
+			for j := 0; j < w; j++ {
+				subImages <- img.SubImage(image.Rect(i, j, i+1, j+1)).(*ebiten.Image)
+			}
+		}
+		close(subImages)
+		wg.Done()
+	}()
+
+	// Create goroutines to use the sub-images.
+	for img := range subImages {
+		wg.Add(1)
+		go func() {
+			for j := 0; j < 1000; j++ {
+				img.Fill(color.RGBA{0xff, 0xff, 0xff, 0xff})
+			}
+			wg.Done()
+		}()
+	}
+	wg.Wait()
+}
+
+// Issue #3267
+func TestSubImageRaceConditionWithSubImage(t *testing.T) {
+	const w, h = 16, 16
+	img := ebiten.NewImage(w, h)
+	subImages := make(chan *ebiten.Image)
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	// Create a goroutine to create sub-images.
+	go func() {
+		for i := 0; i < h; i++ {
+			for j := 0; j < w; j++ {
+				subImages <- img.SubImage(image.Rect(i, j, i+1, j+1)).(*ebiten.Image)
+			}
+		}
+		close(subImages)
+		wg.Done()
+	}()
+
+	// Create goroutines to use the sub-images.
+	for img := range subImages {
+		wg.Add(1)
+		go func() {
+			for j := 0; j < 1000; j++ {
+				img.SubImage(img.Bounds())
+			}
+			wg.Done()
+		}()
+	}
+	wg.Wait()
 }

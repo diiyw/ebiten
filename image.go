@@ -19,6 +19,8 @@ import (
 	"image"
 	"image/color"
 	"math"
+	"sync"
+	"sync/atomic"
 	"unsafe"
 
 	"github.com/hajimehoshi/ebiten/v2/internal/affine"
@@ -31,11 +33,6 @@ import (
 	"github.com/hajimehoshi/ebiten/v2/internal/shaderir"
 	"github.com/hajimehoshi/ebiten/v2/internal/ui"
 )
-
-type subImageCacheEntry struct {
-	image *Image
-	atime int64
-}
 
 // Image represents a rectangle set of pixels.
 // The pixel format is alpha-premultiplied RGBA.
@@ -58,7 +55,26 @@ type Image struct {
 	tmpUniforms []uint32
 
 	// subImageCache is a cache for sub-images.
-	subImageCache map[image.Rectangle]*subImageCacheEntry
+	// subImageCache is valid only when the image is not a sub-image.
+	subImageCache map[image.Rectangle]*Image
+
+	// subImageGCLastTick is the last tick when old sub images are removed from the cache.
+	subImageGCLastTick int64
+
+	// subImageCacheM is a mutex for subImageCache.
+	// subImageCache can be accessed from the image and its sub-images at the same time,
+	// so the map must be protected by a mutex.
+	subImageCacheM sync.Mutex
+
+	// atime is the last access time.
+	// atime needs to be an atomic value since a sub-image atime can be accessed from its original image.
+	atime atomic.Int64
+
+	// usageCallbacks are callbacks that are invoked when the image is used.
+	usageCallbacks map[int64]func()
+
+	// inUsageCallbacks reports whether the image is in usageCallbacks.
+	inUsageCallbacks bool
 
 	// Do not add a 'buffering' member that are resolved lazily.
 	// This tends to forget resolving the buffer easily (#2362).
@@ -70,13 +86,8 @@ func (i *Image) copyCheck() {
 	}
 }
 
-func (i *Image) updateAccessTimeForSubImage() {
-	if !i.isSubImage() {
-		return
-	}
-	if s, ok := i.original.subImageCache[i.bounds]; ok {
-		s.atime = Tick()
-	}
+func (i *Image) updateAccessTime() {
+	i.atime.Store(Tick())
 }
 
 // Size returns the size of the image.
@@ -110,7 +121,10 @@ func (i *Image) Fill(clr color.Color) {
 	if i.isDisposed() {
 		return
 	}
-	i.updateAccessTimeForSubImage()
+
+	i.invokeUsageCallbacks()
+
+	i.updateAccessTime()
 
 	var crf, cgf, cbf, caf float32
 	cr, cg, cb, ca := clr.RGBA()
@@ -254,8 +268,11 @@ func (i *Image) DrawImage(img *Image, options *DrawImageOptions) {
 		return
 	}
 
-	img.updateAccessTimeForSubImage()
-	i.updateAccessTimeForSubImage()
+	i.invokeUsageCallbacks()
+	img.invokeUsageCallbacks()
+
+	i.updateAccessTime()
+	img.updateAccessTime()
 
 	if options == nil {
 		options = &DrawImageOptions{}
@@ -344,6 +361,10 @@ type Vertex struct {
 	// SrcX and SrcY represents a point on a source image.
 	// Be careful that SrcX/SrcY coordinates are on the image's bounds.
 	// This means that an upper-left point of a sub-image might not be (0, 0).
+	//
+	// Before passing vertices to a Kage shader, SrcX/SrcY are converted to texture coordinates of the first image,
+	// which is DrawRectShaderOptions.Image[0] or DrawTrianglesShaderOptions.Images[0].
+	// If the image is nil, SrcX/SrcY are not converted and used as-is.
 	SrcX float32
 	SrcY float32
 
@@ -390,18 +411,26 @@ const (
 )
 
 // FillRule is the rule whether an overlapped region is rendered with DrawTriangles(Shader).
+//
+// Deprecated: as of v2.9.
 type FillRule int
 
 const (
 	// FillRuleFillAll indicates all the triangles are rendered regardless of overlaps.
+	//
+	// Deprecated: as of v2.9.
 	FillRuleFillAll FillRule = FillRule(graphicsdriver.FillRuleFillAll)
 
 	// FillRuleNonZero means that triangles are rendered based on the non-zero rule.
 	// If and only if the number of overlaps is not 0, the region is rendered.
+	//
+	// Deprecated: as of v2.9.
 	FillRuleNonZero FillRule = FillRule(graphicsdriver.FillRuleNonZero)
 
 	// FillRuleEvenOdd means that triangles are rendered based on the even-odd rule.
 	// If and only if the number of overlaps is odd, the region is rendered.
+	//
+	// Deprecated: as of v2.9.
 	FillRuleEvenOdd FillRule = FillRule(graphicsdriver.FillRuleEvenOdd)
 )
 
@@ -477,6 +506,8 @@ type DrawTrianglesOptions struct {
 	// See examples/vector for actual usages.
 	//
 	// The default (zero) value is FillRuleFillAll.
+	//
+	// Deprecated: as of v2.9. Use [github.com/hajimehoshi/ebiten/v2/vector.FillPath] instead.
 	FillRule FillRule
 
 	// AntiAlias indicates whether the rendering uses anti-alias or not.
@@ -485,7 +516,9 @@ type DrawTrianglesOptions struct {
 	// AntiAlias increases internal draw calls and might affect performance.
 	// Use the build tag `ebitenginedebug` to check the number of draw calls if you care.
 	//
-	// The default (zero) value is false.
+	// The default (zero) value is false.//
+	//
+	// Deprecated: as of v2.9. Use [github.com/hajimehoshi/ebiten/v2/vector.FillPath] instead.
 	AntiAlias bool
 
 	// DisableMipmaps disables mipmaps.
@@ -578,8 +611,15 @@ func (i *Image) DrawTriangles32(vertices []Vertex, indices []uint32, img *Image,
 		return
 	}
 
-	img.updateAccessTimeForSubImage()
-	i.updateAccessTimeForSubImage()
+	if len(indices) == 0 {
+		return
+	}
+
+	i.invokeUsageCallbacks()
+	img.invokeUsageCallbacks()
+
+	img.updateAccessTime()
+	i.updateAccessTime()
 
 	if len(vertices) > graphicscommand.MaxVertexCount {
 		// The last part cannot be specified by indices. Just omit them.
@@ -615,30 +655,34 @@ func (i *Image) DrawTriangles32(vertices []Vertex, indices []uint32, img *Image,
 	if options.ColorScaleMode == ColorScaleModeStraightAlpha {
 		// Avoid using `for i, v := range vertices` as adding `v` creates a copy from `vertices` unnecessarily on each loop (#3103).
 		for i := range vertices {
+			// Create a temporary slice to reduce boundary checks.
+			vs := vs[i*graphics.VertexFloatCount : i*graphics.VertexFloatCount+8]
 			dx, dy := dst.adjustPositionF32(vertices[i].DstX, vertices[i].DstY)
-			vs[i*graphics.VertexFloatCount] = dx
-			vs[i*graphics.VertexFloatCount+1] = dy
+			vs[0] = dx
+			vs[1] = dy
 			sx, sy := img.adjustPositionF32(vertices[i].SrcX, vertices[i].SrcY)
-			vs[i*graphics.VertexFloatCount+2] = sx
-			vs[i*graphics.VertexFloatCount+3] = sy
-			vs[i*graphics.VertexFloatCount+4] = vertices[i].ColorR * vertices[i].ColorA * cr
-			vs[i*graphics.VertexFloatCount+5] = vertices[i].ColorG * vertices[i].ColorA * cg
-			vs[i*graphics.VertexFloatCount+6] = vertices[i].ColorB * vertices[i].ColorA * cb
-			vs[i*graphics.VertexFloatCount+7] = vertices[i].ColorA * ca
+			vs[2] = sx
+			vs[3] = sy
+			vs[4] = vertices[i].ColorR * vertices[i].ColorA * cr
+			vs[5] = vertices[i].ColorG * vertices[i].ColorA * cg
+			vs[6] = vertices[i].ColorB * vertices[i].ColorA * cb
+			vs[7] = vertices[i].ColorA * ca
 		}
 	} else {
 		// See comment above (#3103).
 		for i := range vertices {
+			// Create a temporary slice to reduce boundary checks.
+			vs := vs[i*graphics.VertexFloatCount : i*graphics.VertexFloatCount+8]
 			dx, dy := dst.adjustPositionF32(vertices[i].DstX, vertices[i].DstY)
-			vs[i*graphics.VertexFloatCount] = dx
-			vs[i*graphics.VertexFloatCount+1] = dy
+			vs[0] = dx
+			vs[1] = dy
 			sx, sy := img.adjustPositionF32(vertices[i].SrcX, vertices[i].SrcY)
-			vs[i*graphics.VertexFloatCount+2] = sx
-			vs[i*graphics.VertexFloatCount+3] = sy
-			vs[i*graphics.VertexFloatCount+4] = vertices[i].ColorR * cr
-			vs[i*graphics.VertexFloatCount+5] = vertices[i].ColorG * cg
-			vs[i*graphics.VertexFloatCount+6] = vertices[i].ColorB * cb
-			vs[i*graphics.VertexFloatCount+7] = vertices[i].ColorA * ca
+			vs[2] = sx
+			vs[3] = sy
+			vs[4] = vertices[i].ColorR * cr
+			vs[5] = vertices[i].ColorG * cg
+			vs[6] = vertices[i].ColorB * cb
+			vs[7] = vertices[i].ColorA * ca
 		}
 	}
 
@@ -679,7 +723,7 @@ type DrawTrianglesShaderOptions struct {
 
 	// Uniforms is a set of uniform variables for the shader.
 	// The keys are the names of the uniform variables.
-	// The values must be a numeric type, or a slice or an array of a numeric type.
+	// The values must be a numeric/boolean type, or a slice or an array of a numeric/boolean type.
 	// If the uniform variable type is an array, a vector or a matrix,
 	// you have to specify linearly flattened values as a slice or an array.
 	// For example, if the uniform variable type is [4]vec4, the length will be 16.
@@ -699,6 +743,8 @@ type DrawTrianglesShaderOptions struct {
 	// See examples/vector for actual usages.
 	//
 	// The default (zero) value is FillRuleFillAll.
+	//
+	// Deprecated: as of v2.9. Use [github.com/hajimehoshi/ebiten/v2/vector.FillPath] instead.
 	FillRule FillRule
 
 	// AntiAlias indicates whether the rendering uses anti-alias or not.
@@ -708,6 +754,8 @@ type DrawTrianglesShaderOptions struct {
 	// Use the build tag `ebitenginedebug` to check the number of draw calls if you care.
 	//
 	// The default (zero) value is false.
+	//
+	// Deprecated: as of v2.9. Use [github.com/hajimehoshi/ebiten/v2/vector.FillPath] instead.
 	AntiAlias bool
 }
 
@@ -782,15 +830,29 @@ func (i *Image) DrawTrianglesShader32(vertices []Vertex, indices []uint32, shade
 		panic("ebiten: the given shader to DrawTrianglesShader must not be disposed")
 	}
 
+	if len(indices) == 0 {
+		return
+	}
+
+	i.invokeUsageCallbacks()
 	if options != nil {
 		for _, img := range options.Images {
 			if img == nil {
 				continue
 			}
-			img.updateAccessTimeForSubImage()
+			img.invokeUsageCallbacks()
 		}
 	}
-	i.updateAccessTimeForSubImage()
+
+	if options != nil {
+		for _, img := range options.Images {
+			if img == nil {
+				continue
+			}
+			img.updateAccessTime()
+		}
+	}
+	i.updateAccessTime()
 
 	if len(vertices) > graphicscommand.MaxVertexCount {
 		// The last part cannot be specified by indices. Just omit them.
@@ -821,23 +883,25 @@ func (i *Image) DrawTrianglesShader32(vertices []Vertex, indices []uint32, shade
 	src := options.Images[0]
 	// Avoid using `for i, v := range vertices` as adding `v` creates a copy from `vertices` unnecessarily on each loop (#3103).
 	for i := range vertices {
+		// Create a temporary slice to reduce boundary checks.
+		vs := vs[i*graphics.VertexFloatCount : i*graphics.VertexFloatCount+12]
 		dx, dy := dst.adjustPositionF32(vertices[i].DstX, vertices[i].DstY)
-		vs[i*graphics.VertexFloatCount] = dx
-		vs[i*graphics.VertexFloatCount+1] = dy
+		vs[0] = dx
+		vs[1] = dy
 		sx, sy := vertices[i].SrcX, vertices[i].SrcY
 		if src != nil {
 			sx, sy = src.adjustPositionF32(sx, sy)
 		}
-		vs[i*graphics.VertexFloatCount+2] = sx
-		vs[i*graphics.VertexFloatCount+3] = sy
-		vs[i*graphics.VertexFloatCount+4] = vertices[i].ColorR
-		vs[i*graphics.VertexFloatCount+5] = vertices[i].ColorG
-		vs[i*graphics.VertexFloatCount+6] = vertices[i].ColorB
-		vs[i*graphics.VertexFloatCount+7] = vertices[i].ColorA
-		vs[i*graphics.VertexFloatCount+8] = vertices[i].Custom0
-		vs[i*graphics.VertexFloatCount+9] = vertices[i].Custom1
-		vs[i*graphics.VertexFloatCount+10] = vertices[i].Custom2
-		vs[i*graphics.VertexFloatCount+11] = vertices[i].Custom3
+		vs[2] = sx
+		vs[3] = sy
+		vs[4] = vertices[i].ColorR
+		vs[5] = vertices[i].ColorG
+		vs[6] = vertices[i].ColorB
+		vs[7] = vertices[i].ColorA
+		vs[8] = vertices[i].Custom0
+		vs[9] = vertices[i].Custom1
+		vs[10] = vertices[i].Custom2
+		vs[11] = vertices[i].Custom3
 	}
 
 	var imgs [graphics.ShaderSrcImageCount]*ui.Image
@@ -900,7 +964,7 @@ type DrawRectShaderOptions struct {
 
 	// Uniforms is a set of uniform variables for the shader.
 	// The keys are the names of the uniform variables.
-	// The values must be a numeric type, or a slice or an array of a numeric type.
+	// The values must be a numeric/boolean type, or a slice or an array of a numeric/boolean type.
 	// If the uniform variable type is an array, a vector or a matrix,
 	// you have to specify linearly flattened values as a slice or an array.
 	// For example, if the uniform variable type is [4]vec4, the length will be 16.
@@ -955,10 +1019,20 @@ func (i *Image) DrawRectShader(width, height int, shader *Shader, options *DrawR
 			if img == nil {
 				continue
 			}
-			img.updateAccessTimeForSubImage()
+			img.invokeUsageCallbacks()
 		}
 	}
-	i.updateAccessTimeForSubImage()
+	i.invokeUsageCallbacks()
+
+	if options != nil {
+		for _, img := range options.Images {
+			if img == nil {
+				continue
+			}
+			img.updateAccessTime()
+		}
+	}
+	i.updateAccessTime()
 
 	if options == nil {
 		options = &DrawRectShaderOptions{}
@@ -1058,13 +1132,27 @@ func (i *Image) SubImage(r image.Rectangle) image.Image {
 		r = image.Rectangle{}
 	}
 
-	if s, ok := i.subImageCache[r]; ok {
-		s.atime = Tick()
-		return s.image
+	i.subImageCacheM.Lock()
+	defer i.subImageCacheM.Unlock()
+
+	// The image might already be disposed in another goroutine.
+	// Recheck this.
+	if i.isDisposed() {
+		return nil
 	}
-	for _, s := range i.subImageCache {
-		if s.atime+60 < Tick() {
-			delete(i.subImageCache, s.image.bounds)
+
+	if img, ok := i.subImageCache[r]; ok {
+		img.updateAccessTime()
+		return img
+	}
+
+	if tick := Tick(); i.subImageGCLastTick < tick {
+		i.subImageGCLastTick = tick
+
+		for _, img := range i.subImageCache {
+			if img.atime.Load()+60 < tick {
+				delete(i.subImageCache, img.bounds)
+			}
 		}
 	}
 
@@ -1076,12 +1164,10 @@ func (i *Image) SubImage(r image.Rectangle) image.Image {
 	img.addr = img
 
 	if i.subImageCache == nil {
-		i.subImageCache = map[image.Rectangle]*subImageCacheEntry{}
+		i.subImageCache = map[image.Rectangle]*Image{}
 	}
-	i.subImageCache[r] = &subImageCacheEntry{
-		image: img,
-		atime: Tick(),
-	}
+	i.subImageCache[r] = img
+	img.updateAccessTime()
 
 	return img
 }
@@ -1133,6 +1219,8 @@ func (i *Image) ReadPixels(pixels []byte) {
 		return
 	}
 
+	i.invokeUsageCallbacks()
+
 	i.image.ReadPixels(pixels, i.adjustedBounds())
 }
 
@@ -1177,6 +1265,8 @@ func (i *Image) at(x, y int) (r, g, b, a byte) {
 		return 0, 0, 0, 0
 	}
 
+	i.invokeUsageCallbacks()
+
 	x, y = i.adjustPosition(x, y)
 	var pix [4]byte
 	i.image.ReadPixels(pix[:], image.Rect(x, y, x+1, y+1))
@@ -1186,6 +1276,8 @@ func (i *Image) at(x, y int) (r, g, b, a byte) {
 // Set sets the color at (x, y).
 //
 // Set implements the standard draw.Image's Set.
+//
+// If (x, y) is outside the image bounds, Set does nothing.
 //
 // Even if a result is an invalid color as a premultiplied-alpha color, i.e. an alpha value exceeds other color values,
 // the value is kept and is not clamped.
@@ -1199,7 +1291,9 @@ func (i *Image) Set(x, y int, clr color.Color) {
 		return
 	}
 
-	i.updateAccessTimeForSubImage()
+	i.invokeUsageCallbacks()
+
+	i.updateAccessTime()
 
 	if !image.Pt(x, y).In(i.Bounds()) {
 		return
@@ -1235,8 +1329,10 @@ func (i *Image) Dispose() {
 	}
 	i.image.Deallocate()
 	i.image = nil
-
+	i.subImageCacheM.Lock()
 	i.subImageCache = nil
+	i.subImageCacheM.Unlock()
+	i.usageCallbacks = nil
 }
 
 // Deallocate clears the image and deallocates the internal state of the image.
@@ -1260,6 +1356,7 @@ func (i *Image) Deallocate() {
 		return
 	}
 	i.image.Deallocate()
+	i.usageCallbacks = nil
 }
 
 // WritePixels replaces the pixels of the image.
@@ -1281,6 +1378,8 @@ func (i *Image) WritePixels(pixels []byte) {
 	if i.isDisposed() {
 		return
 	}
+
+	i.invokeUsageCallbacks()
 
 	// Do not need to copy pixels here.
 	// * In internal/mipmap, pixels are copied when necessary.
@@ -1344,7 +1443,7 @@ func NewImageWithOptions(bounds image.Rectangle, options *NewImageOptions) *Imag
 
 func newImage(bounds image.Rectangle, imageType atlas.ImageType) *Image {
 	if isRunGameEnded() {
-		panic(fmt.Sprintf("ebiten: NewImage cannot be called after RunGame finishes"))
+		panic("ebiten: NewImage cannot be called after RunGame finishes")
 	}
 
 	width, height := bounds.Dx(), bounds.Dy()
@@ -1489,4 +1588,47 @@ func (i *Image) ensureTmpIndices(n int) []uint32 {
 
 // private implements FinalScreen.
 func (*Image) private() {
+}
+
+// Do not use usage callbacks except for Ebitengine packages.
+// There is no guarantee for compatibility of this function.
+
+var currentCallbackToken atomic.Int64
+
+//go:linkname addUsageCallback
+func addUsageCallback(img *Image, callback func()) int64 {
+	return img.addUsageCallback(callback)
+}
+
+func (i *Image) addUsageCallback(callback func()) int64 {
+	if i.usageCallbacks == nil {
+		i.usageCallbacks = map[int64]func(){}
+	}
+	token := currentCallbackToken.Add(1)
+	i.usageCallbacks[token] = callback
+	return token
+}
+
+//go:linkname removeUsageCallback
+func removeUsageCallback(img *Image, token int64) {
+	img.removeUsageCallback(token)
+}
+
+func (i *Image) removeUsageCallback(token int64) {
+	delete(i.usageCallbacks, token)
+}
+
+func (i *Image) invokeUsageCallbacks() {
+	if i.inUsageCallbacks {
+		return
+	}
+
+	i.inUsageCallbacks = true
+	defer func() {
+		i.inUsageCallbacks = false
+	}()
+
+	for _, cb := range i.usageCallbacks {
+		cb()
+	}
 }

@@ -32,16 +32,22 @@ const (
 	screenHeight = 480
 )
 
+var blends = []ebiten.Blend{
+	ebiten.BlendSourceOver,
+	ebiten.BlendLighter,
+}
+
 type Game struct {
 	debugui debugui.DebugUI
 
 	counter int
 
-	aa   bool
-	line bool
+	aa         bool
+	line       bool
+	blendIndex int
 }
 
-func (g *Game) drawEbitenText(screen *ebiten.Image, x, y int, aa bool, line bool) {
+func (g *Game) drawEbitenText(screen *ebiten.Image, aa bool, line bool) {
 	var path vector.Path
 
 	// E
@@ -113,13 +119,17 @@ func (g *Game) drawEbitenText(screen *ebiten.Image, x, y int, aa bool, line bool
 	path.LineTo(290, 20)
 	path.Close()
 
+	drawOp := &vector.DrawPathOptions{}
+	drawOp.AntiAlias = aa
+	drawOp.ColorScale.ScaleWithColor(color.RGBA{0xdb, 0x56, 0x20, 0xff})
+	drawOp.Blend = blends[g.blendIndex]
 	if line {
-		op := &vector.StrokeOptions{}
-		op.Width = 5
-		op.LineJoin = vector.LineJoinRound
-		vector.StrokePath(screen, &path, color.RGBA{0xdb, 0x56, 0x20, 0xff}, aa, op)
+		strokeOp := &vector.StrokeOptions{}
+		strokeOp.Width = 5
+		strokeOp.LineJoin = vector.LineJoinRound
+		vector.StrokePath(screen, &path, strokeOp, drawOp)
 	} else {
-		vector.DrawFilledPath(screen, &path, color.RGBA{0xdb, 0x56, 0x20, 0xff}, aa, vector.FillRuleNonZero)
+		vector.FillPath(screen, &path, nil, drawOp)
 	}
 }
 
@@ -149,15 +159,22 @@ func (g *Game) drawEbitenLogo(screen *ebiten.Image, x, y int, aa bool, line bool
 	path.LineTo(unit, 4*unit)
 	path.Close()
 
-	var geoM ebiten.GeoM
-	geoM.Translate(float64(x), float64(y))
+	var newPath vector.Path
+	op := &vector.AddPathOptions{}
+	op.GeoM.Translate(float64(x), float64(y))
+	newPath.AddPath(&path, op)
+
+	drawOp := &vector.DrawPathOptions{}
+	drawOp.AntiAlias = aa
+	drawOp.ColorScale.ScaleWithColor(color.RGBA{0xdb, 0x56, 0x20, 0xff})
+	drawOp.Blend = blends[g.blendIndex]
 	if line {
-		op := &vector.StrokeOptions{}
-		op.Width = 5
-		op.LineJoin = vector.LineJoinRound
-		vector.StrokePath(screen, path.ApplyGeoM(geoM), color.RGBA{0xdb, 0x56, 0x20, 0xff}, aa, op)
+		strokeOp := &vector.StrokeOptions{}
+		strokeOp.Width = 5
+		strokeOp.LineJoin = vector.LineJoinRound
+		vector.StrokePath(screen, &newPath, strokeOp, drawOp)
 	} else {
-		vector.DrawFilledPath(screen, path.ApplyGeoM(geoM), color.RGBA{0xdb, 0x56, 0x20, 0xff}, aa, vector.FillRuleNonZero)
+		vector.FillPath(screen, &newPath, nil, drawOp)
 	}
 }
 
@@ -177,13 +194,17 @@ func (g *Game) drawArc(screen *ebiten.Image, count int, aa bool, line bool) {
 	path.Arc(550, 100, 50, float32(theta1), float32(theta2), vector.Clockwise)
 	path.Close()
 
+	drawOp := &vector.DrawPathOptions{}
+	drawOp.AntiAlias = aa
+	drawOp.ColorScale.ScaleWithColor(color.RGBA{0x33, 0xcc, 0x66, 0xff})
+	drawOp.Blend = blends[g.blendIndex]
 	if line {
-		op := &vector.StrokeOptions{}
-		op.Width = 5
-		op.LineJoin = vector.LineJoinRound
-		vector.StrokePath(screen, &path, color.RGBA{0x33, 0xcc, 0x66, 0xff}, aa, op)
+		strokeOp := &vector.StrokeOptions{}
+		strokeOp.Width = 5
+		strokeOp.LineJoin = vector.LineJoinRound
+		vector.StrokePath(screen, &path, strokeOp, drawOp)
 	} else {
-		vector.DrawFilledPath(screen, &path, color.RGBA{0x33, 0xcc, 0x66, 0xff}, aa, vector.FillRuleNonZero)
+		vector.FillPath(screen, &path, nil, drawOp)
 	}
 }
 
@@ -216,13 +237,17 @@ func (g *Game) drawWave(screen *ebiten.Image, counter int, aa bool, line bool) {
 	path.LineTo(screenWidth, screenHeight)
 	path.LineTo(0, screenHeight)
 
+	drawOp := &vector.DrawPathOptions{}
+	drawOp.AntiAlias = aa
+	drawOp.ColorScale.ScaleWithColor(color.RGBA{0x33, 0x66, 0xff, 0xff})
+	drawOp.Blend = blends[g.blendIndex]
 	if line {
-		op := &vector.StrokeOptions{}
-		op.Width = 5
-		op.LineJoin = vector.LineJoinRound
-		vector.StrokePath(screen, &path, color.RGBA{0x33, 0x66, 0xff, 0xff}, aa, op)
+		strokeOp := &vector.StrokeOptions{}
+		strokeOp.Width = 5
+		strokeOp.LineJoin = vector.LineJoinRound
+		vector.StrokePath(screen, &path, strokeOp, drawOp)
 	} else {
-		vector.DrawFilledPath(screen, &path, color.RGBA{0x33, 0x66, 0xff, 0xff}, aa, vector.FillRuleNonZero)
+		vector.FillPath(screen, &path, nil, drawOp)
 	}
 }
 
@@ -235,6 +260,10 @@ func (g *Game) Update() error {
 			ctx.Text(fmt.Sprintf("FPS: %0.2f", ebiten.ActualFPS()))
 			ctx.Checkbox(&g.aa, "Anti-alias")
 			ctx.Checkbox(&g.line, "Line")
+			ctx.Button("Change Blend").On(func() {
+				g.blendIndex++
+				g.blendIndex %= len(blends)
+			})
 		})
 		return nil
 	}); err != nil {
@@ -247,8 +276,13 @@ func (g *Game) Update() error {
 func (g *Game) Draw(screen *ebiten.Image) {
 	dst := screen
 
-	dst.Fill(color.RGBA{0xe0, 0xe0, 0xe0, 0xff})
-	g.drawEbitenText(dst, 0, 50, g.aa, g.line)
+	switch g.blendIndex {
+	case 0:
+		dst.Fill(color.RGBA{0xe0, 0xe0, 0xe0, 0xff})
+	case 1:
+		dst.Fill(color.RGBA{0x80, 0x80, 0x80, 0xff})
+	}
+	g.drawEbitenText(dst, g.aa, g.line)
 	g.drawEbitenLogo(dst, 20, 150, g.aa, g.line)
 	g.drawArc(dst, g.counter, g.aa, g.line)
 	g.drawWave(dst, g.counter, g.aa, g.line)

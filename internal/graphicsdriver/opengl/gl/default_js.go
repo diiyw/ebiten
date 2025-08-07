@@ -59,6 +59,7 @@ type defaultContext struct {
 	fnFramebufferTexture2D     js.Value
 	fnFlush                    js.Value
 	fnGetError                 js.Value
+	fnGetExtension             js.Value
 	fnGetParameter             js.Value
 	fnGetProgramInfoLog        js.Value
 	fnGetProgramParameter      js.Value
@@ -187,6 +188,7 @@ func NewDefaultContext(v js.Value) (Context, error) {
 		fnFramebufferTexture2D:     v.Get("framebufferTexture2D").Call("bind", v),
 		fnFlush:                    v.Get("flush").Call("bind", v),
 		fnGetError:                 v.Get("getError").Call("bind", v),
+		fnGetExtension:             v.Get("getExtension").Call("bind", v),
 		fnGetParameter:             v.Get("getParameter").Call("bind", v),
 		fnGetProgramInfoLog:        v.Get("getProgramInfoLog").Call("bind", v),
 		fnGetProgramParameter:      v.Get("getProgramParameter").Call("bind", v),
@@ -404,6 +406,14 @@ func (c *defaultContext) FramebufferTexture2D(target uint32, attachment uint32, 
 
 func (c *defaultContext) GetError() uint32 {
 	return uint32(c.fnGetError.Invoke().Int())
+}
+
+func (c *defaultContext) GetExtension(name string) any {
+	ext := c.fnGetExtension.Invoke(name)
+	if ext.IsNull() || ext.IsUndefined() {
+		return nil
+	}
+	return ext
 }
 
 func (c *defaultContext) GetInteger(pname uint32) int {

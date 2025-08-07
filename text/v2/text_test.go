@@ -15,8 +15,8 @@
 package text_test
 
 import (
+	"bufio"
 	"bytes"
-	"fmt"
 	"image"
 	"image/color"
 	"math"
@@ -24,7 +24,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"strings"
 	"testing"
 
@@ -479,101 +478,6 @@ func TestCollection(t *testing.T) {
 	}
 }
 
-func TestLines(t *testing.T) {
-	testCases := []struct {
-		In  string
-		Out []string
-	}{
-		{
-			In:  "",
-			Out: nil,
-		},
-		{
-			In:  "\n",
-			Out: []string{"\n"},
-		},
-		{
-			In:  "aaa\nbbb\nccc",
-			Out: []string{"aaa\n", "bbb\n", "ccc"},
-		},
-		{
-			In:  "aaa\nbbb\nccc\n",
-			Out: []string{"aaa\n", "bbb\n", "ccc\n"},
-		},
-		{
-			In:  "aaa\u0085bbb\r\nccc\rddd\u2028eee",
-			Out: []string{"aaa\u0085", "bbb\r\n", "ccc\r", "ddd\u2028", "eee"},
-		},
-	}
-	for _, tc := range testCases {
-		t.Run(fmt.Sprintf("%q", tc.In), func(t *testing.T) {
-			got := slices.Collect(text.Lines(tc.In))
-			want := tc.Out
-			if len(got) != len(want) {
-				t.Errorf("len(got): %d, len(want): %d", len(got), len(want))
-			}
-			for i := range got {
-				if got[i] != want[i] {
-					t.Errorf("got[%d]: %q, want[%d]: %q", i, got[i], i, want[i])
-				}
-			}
-		})
-	}
-}
-
-func TestTrimTailingLineBreak(t *testing.T) {
-	testCases := []struct {
-		In  string
-		Out string
-	}{
-		{
-			In:  "",
-			Out: "",
-		},
-		{
-			In:  "aaa",
-			Out: "aaa",
-		},
-		{
-			In:  "aaa\n",
-			Out: "aaa",
-		},
-		{
-			In:  "aaa\n\n",
-			Out: "aaa\n",
-		},
-		{
-			In:  "aaa\r\n",
-			Out: "aaa",
-		},
-		{
-			In:  "aaa\r",
-			Out: "aaa",
-		},
-		{
-			In:  "aaa\u0085",
-			Out: "aaa",
-		},
-		{
-			In:  "aaa\u0085\u2028",
-			Out: "aaa\u0085",
-		},
-		{
-			In:  "aaa\nbbb\n",
-			Out: "aaa\nbbb",
-		},
-	}
-	for _, tc := range testCases {
-		t.Run(fmt.Sprintf("%q", tc.In), func(t *testing.T) {
-			got := text.TrimTailingLineBreak(tc.In)
-			want := tc.Out
-			if got != want {
-				t.Errorf("got: %q, want: %q", got, want)
-			}
-		})
-	}
-}
-
 func TestRuneToBoolMap(t *testing.T) {
 	var rtb text.RuneToBoolMap
 	m := map[rune]bool{}
@@ -590,5 +494,66 @@ func TestRuneToBoolMap(t *testing.T) {
 		if gotVal, gotOK := rtb.Get(r); gotVal != (v != 0) || !gotOK {
 			t.Fatalf("rune: %c, got: %v, %v; want: %v, %v", r, gotVal, gotOK, v != 0, true)
 		}
+	}
+}
+
+// Issue #3284
+func TestAppendGlyphsWithInvalidSequence(t *testing.T) {
+	goxFace := text.NewGoXFace(bitmapfont.Face)
+
+	f, err := os.Open(filepath.Join("testdata", "Roboto-Regular.ttf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = f.Close()
+	}()
+	fs, err := text.NewGoTextFaceSource(bufio.NewReader(f))
+	if err != nil {
+		t.Fatal(err)
+	}
+	goTextFace := &text.GoTextFace{
+		Source: fs,
+		Size:   32,
+	}
+
+	for _, tc := range []struct {
+		name string
+		face text.Face
+	}{
+		{
+			name: "GoXFace",
+			face: goxFace,
+		},
+		{
+			name: "GoTextFace",
+			face: goTextFace,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var glyphs []text.Glyph
+			glyphs = text.AppendGlyphs(glyphs, "a\x80b", tc.face, nil)
+			if len(glyphs) != 3 {
+				t.Fatalf("got: %d, want: 3", len(glyphs))
+			}
+			if got, want := glyphs[0].StartIndexInBytes, 0; got != want {
+				t.Errorf("got: %d, want: %d", got, want)
+			}
+			if got, want := glyphs[0].EndIndexInBytes, 1; got != want {
+				t.Errorf("got: %d, want: %d", got, want)
+			}
+			if got, want := glyphs[1].StartIndexInBytes, 1; got != want {
+				t.Errorf("got: %d, want: %d", got, want)
+			}
+			if got, want := glyphs[1].EndIndexInBytes, 2; got != want {
+				t.Errorf("got: %d, want: %d", got, want)
+			}
+			if got, want := glyphs[2].StartIndexInBytes, 2; got != want {
+				t.Errorf("got: %d, want: %d", got, want)
+			}
+			if got, want := glyphs[2].EndIndexInBytes, 3; got != want {
+				t.Errorf("got: %d, want: %d", got, want)
+			}
+		})
 	}
 }

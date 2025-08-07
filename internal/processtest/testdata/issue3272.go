@@ -17,40 +17,41 @@
 package main
 
 import (
-	"fmt"
-	"os"
-
 	"github.com/hajimehoshi/ebiten/v2"
+	"github.com/hajimehoshi/ebiten/v2/vector"
 )
 
 type Game struct {
-	counter int
+	onceRendered bool
 }
 
 func (g *Game) Update() error {
-	g.counter++
-	if g.counter >= 60 {
-		return ebiten.Termination
+	if !g.onceRendered {
+		return nil
 	}
-	return nil
+	return ebiten.Termination
 }
 
 func (g *Game) Draw(screen *ebiten.Image) {
+	paths := make([]vector.Path, 100)
+	for i := range paths {
+		paths[i].MoveTo(0, 0)
+		paths[i].LineTo(500, 0)
+		paths[i].LineTo(500, 500)
+		paths[i].LineTo(0, 500)
+		paths[i].Close()
+		op := &vector.DrawPathOptions{}
+		op.AntiAlias = true
+		vector.FillPath(screen, &paths[i], nil, op)
+	}
+	g.onceRendered = true
 }
 
-func (g *Game) Layout(w, h int) (int, int) {
-	panic("panic from Layout")
-	return 320, 240
+func (g *Game) Layout(width, height int) (int, int) {
+	return width, height
 }
 
 func main() {
-	defer func() {
-		r := recover()
-		if r == nil {
-			fmt.Fprintf(os.Stderr, "Expected a panic, but got none\n")
-			os.Exit(1)
-		}
-	}()
 	if err := ebiten.RunGame(&Game{}); err != nil {
 		panic(err)
 	}

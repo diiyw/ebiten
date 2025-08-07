@@ -2867,3 +2867,199 @@ func BenchmarkBuiltinShader(b *testing.B) {
 		_ = ebiten.BuiltinShader(builtinshader.FilterNearest, builtinshader.AddressUnsafe, false)
 	}
 }
+
+// Issue #3251
+func TestShaderSwap(t *testing.T) {
+	const w, h = 16, 16
+
+	dst := ebiten.NewImage(w, h)
+	s, err := ebiten.NewShader([]byte(`//kage:unit pixels
+
+package main
+
+func Fragment(dstPos vec4, srcPos vec2, color vec4) vec4 {
+	a := 0.25
+	b := 0.5
+	a, b = b, a
+	return vec4(a, b, 0.75, 1)
+}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	dst.DrawRectShader(w, h, s, nil)
+
+	for j := 0; j < h; j++ {
+		for i := 0; i < w; i++ {
+			got := dst.At(i, j).(color.RGBA)
+			want := color.RGBA{R: 0x80, G: 0x40, B: 0xc0, A: 0xff}
+			if !sameColors(got, want, 2) {
+				t.Errorf("dst.At(%d, %d): got: %v, want: %v", i, j, got, want)
+			}
+		}
+	}
+}
+
+func TestShaderVectorAndScalarMinMax(t *testing.T) {
+	const w, h = 16, 16
+
+	dst := ebiten.NewImage(w, h)
+	s, err := ebiten.NewShader([]byte(`//kage:unit pixels
+package main
+func Fragment(dstPos vec4, srcPos vec2, color vec4) vec4 {
+	a := min(vec2(0.375, 0.5), 0.25)
+	b := max(vec2(0.625, 0.5), 0.75)
+	return vec4(a, b)
+}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	dst.DrawRectShader(w, h, s, nil)
+
+	for j := 0; j < h; j++ {
+		for i := 0; i < w; i++ {
+			got := dst.At(i, j).(color.RGBA)
+			want := color.RGBA{R: 0x40, G: 0x40, B: 0xc0, A: 0xc0}
+			if !sameColors(got, want, 2) {
+				t.Errorf("dst.At(%d, %d): got: %v, want: %v", i, j, got, want)
+			}
+		}
+	}
+}
+
+func TestShaderVariadicMinMax(t *testing.T) {
+	const w, h = 16, 16
+
+	dst := ebiten.NewImage(w, h)
+	s, err := ebiten.NewShader([]byte(`//kage:unit pixels
+package main
+func Fragment(dstPos vec4, srcPos vec2, color vec4) vec4 {
+	a := min(0.25, 0.375, 0.5, 0.625, 0.75)
+	b := max(0.75, 0.625, 0.5, 0.375, 0.25)
+	return vec4(float(a), float(b), 0.75, 1)
+}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	dst.DrawRectShader(w, h, s, nil)
+
+	for j := 0; j < h; j++ {
+		for i := 0; i < w; i++ {
+			got := dst.At(i, j).(color.RGBA)
+			want := color.RGBA{R: 0x40, G: 0xc0, B: 0xc0, A: 0xff}
+			if !sameColors(got, want, 2) {
+				t.Errorf("dst.At(%d, %d): got: %v, want: %v", i, j, got, want)
+			}
+		}
+	}
+}
+
+func TestShaderUniformBool(t *testing.T) {
+	const w, h = 16, 16
+
+	dst := ebiten.NewImage(w, h)
+	s, err := ebiten.NewShader([]byte(`//kage:unit pixels
+
+package main
+
+var B1 bool
+var B2 [2]bool
+var B3 bool
+
+func Fragment(dstPos vec4, srcPos vec2, color vec4) vec4 {
+	var r, g, b, a float
+	if B1 {
+		r = 1.0
+	}
+	if B2[0] {
+		g = 1.0
+	}
+	if B2[1] {
+		b = 1.0
+	}
+	if B3 {
+		a = 1.0
+	}
+	return vec4(r, g, b, a)
+}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	op := &ebiten.DrawRectShaderOptions{}
+	op.Uniforms = map[string]any{
+		"B1": true,
+		"B2": [2]bool{false, true},
+		"B3": true,
+	}
+	dst.DrawRectShader(w, h, s, op)
+
+	for j := 0; j < h; j++ {
+		for i := 0; i < w; i++ {
+			got := dst.At(i, j).(color.RGBA)
+			want := color.RGBA{R: 0xff, G: 0, B: 0xff, A: 0xff}
+			if !sameColors(got, want, 2) {
+				t.Errorf("dst.At(%d, %d): got: %v, want: %v", i, j, got, want)
+			}
+		}
+	}
+}
+
+func TestShaderFrontFacing(t *testing.T) {
+	const w, h = 16, 16
+
+	dst := ebiten.NewImage(w, h)
+	s, err := ebiten.NewShader([]byte(`//kage:unit pixels
+
+package main
+
+func Fragment(dstPos vec4, srcPos vec2, color vec4) vec4 {
+	if frontfacing() {
+		return vec4(0.5, 0, 0, 1)
+	}
+	return vec4(0, 0.5, 0, 1)
+}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	vs := []ebiten.Vertex{
+		{
+			DstX: 0,
+			DstY: 0,
+		},
+		{
+			DstX: w,
+			DstY: 0,
+		},
+		{
+			DstX: 0,
+			DstY: h,
+		},
+		{
+			DstX: w,
+			DstY: h,
+		},
+	}
+	op := &ebiten.DrawTrianglesShaderOptions{}
+	op.Blend = ebiten.BlendLighter
+	dst.DrawTrianglesShader32(vs, []uint32{0, 1, 2, 1, 2, 3}, s, op)
+	dst.DrawTrianglesShader32(vs, []uint32{2, 1, 0, 3, 2, 1}, s, op)
+
+	for j := 0; j < h; j++ {
+		for i := 0; i < w; i++ {
+			got := dst.At(i, j).(color.RGBA)
+			want := color.RGBA{R: 0x80, G: 0x80, B: 0x00, A: 0xff}
+			if !sameColors(got, want, 2) {
+				t.Errorf("dst.At(%d, %d): got: %v, want: %v", i, j, got, want)
+			}
+		}
+	}
+}
