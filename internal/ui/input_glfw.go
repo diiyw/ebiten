@@ -18,6 +18,7 @@ package ui
 
 import (
 	"math"
+	"time"
 
 	"github.com/hajimehoshi/ebiten/v2/internal/gamepad"
 	"github.com/hajimehoshi/ebiten/v2/internal/glfw"
@@ -32,6 +33,52 @@ var glfwMouseButtonToMouseButton = map[glfw.MouseButton]MouseButton{
 }
 
 func (u *UserInterface) registerInputCallbacks() error {
+	if _, err := u.window.SetKeyCallback(func(w *glfw.Window, key glfw.Key, scancode int, action glfw.Action, mods glfw.ModifierKey) {
+		// Ignore key repeats for now.
+		if action == glfw.Repeat {
+			return
+		}
+
+		// As this function is called from GLFW callbacks, the current thread is main.
+		u.m.Lock()
+		defer u.m.Unlock()
+
+		uk, ok := glfwKeyToUIKey[key]
+		if !ok {
+			return
+		}
+		if action == glfw.Press {
+			u.inputState.setKeyPressed(uk, u.InputTime())
+		} else {
+			u.inputState.setKeyReleased(uk, u.InputTime())
+		}
+	}); err != nil {
+		return err
+	}
+
+	if _, err := u.window.SetMouseButtonCallback(func(w *glfw.Window, button glfw.MouseButton, action glfw.Action, mods glfw.ModifierKey) {
+		// Ignore key repeats for now.
+		if action == glfw.Repeat {
+			return
+		}
+
+		// As this function is called from GLFW callbacks, the current thread is main.
+		u.m.Lock()
+		defer u.m.Unlock()
+
+		ub, ok := glfwMouseButtonToMouseButton[button]
+		if !ok {
+			return
+		}
+		if action == glfw.Press {
+			u.inputState.setMouseButtonPressed(ub, u.InputTime())
+		} else {
+			u.inputState.setMouseButtonReleased(ub, u.InputTime())
+		}
+	}); err != nil {
+		return err
+	}
+
 	if _, err := u.window.SetCharModsCallback(func(w *glfw.Window, char rune, mods glfw.ModifierKey) {
 		// As this function is called from GLFW callbacks, the current thread is main.
 		u.m.Lock()
@@ -45,6 +92,43 @@ func (u *UserInterface) registerInputCallbacks() error {
 		// As this function is called from GLFW callbacks, the current thread is main.
 		u.m.Lock()
 		defer u.m.Unlock()
+
+		now := time.Now()
+
+		// Sometimes the wheel event accepts anomalous values like sudden spikes and rapid reversals (#3390).
+		// Such values should be ignored.
+		if now.Sub(u.lastWheelTime) < 100*time.Millisecond {
+			// Thresholds are determined in a heuristic way.
+			const (
+				rapidReversalThreshold = 0.75
+				spikeThreshold         = 50
+			)
+			if math.Abs(xoff) >= 1 && u.lastWheelOffsetX != 0 {
+				rate := math.Abs(xoff) / math.Abs(u.lastWheelOffsetX)
+				sb := u.lastWheelOffsetX*xoff > 0
+				if rate >= spikeThreshold && sb {
+					xoff = 0
+				}
+				if rate >= rapidReversalThreshold && !sb {
+					xoff = 0
+				}
+			}
+			if math.Abs(yoff) >= 1 && u.lastWheelOffsetY != 0 {
+				rate := math.Abs(yoff) / math.Abs(u.lastWheelOffsetY)
+				sb := u.lastWheelOffsetY*yoff > 0
+				if rate >= spikeThreshold && sb {
+					yoff = 0
+				}
+				if rate >= rapidReversalThreshold && !sb {
+					yoff = 0
+				}
+			}
+		}
+
+		u.lastWheelOffsetX = xoff
+		u.lastWheelOffsetY = yoff
+		u.lastWheelTime = now
+
 		u.inputState.WheelX += xoff
 		u.inputState.WheelY += yoff
 	}); err != nil {
@@ -54,33 +138,18 @@ func (u *UserInterface) registerInputCallbacks() error {
 	return nil
 }
 
-func (u *UserInterface) updateInputState() error {
+func (u *UserInterface) updateInputStateForFrame() error {
 	var err error
 	u.mainThread.Call(func() {
-		err = u.updateInputStateImpl()
+		err = u.updateInputStateForFrameImpl()
 	})
 	return err
 }
 
-// updateInputStateImpl must be called from the main thread.
-func (u *UserInterface) updateInputStateImpl() error {
+// updateInputStateForFrameImpl must be called from the main thread.
+func (u *UserInterface) updateInputStateForFrameImpl() error {
 	u.m.Lock()
 	defer u.m.Unlock()
-
-	for uk, gk := range uiKeyToGLFWKey {
-		s, err := u.window.GetKey(gk)
-		if err != nil {
-			return err
-		}
-		u.inputState.KeyPressed[uk] = s == glfw.Press
-	}
-	for gb, ub := range glfwMouseButtonToMouseButton {
-		s, err := u.window.GetMouseButton(gb)
-		if err != nil {
-			return err
-		}
-		u.inputState.MouseButtonPressed[ub] = s == glfw.Press
-	}
 
 	m, err := u.currentMonitor()
 	if err != nil {
@@ -145,12 +214,4 @@ func (u *UserInterface) KeyName(key Key) string {
 		name = n
 	})
 	return name
-}
-
-func (u *UserInterface) saveCursorPosition() {
-	u.m.Lock()
-	defer u.m.Unlock()
-
-	u.savedCursorX = u.inputState.CursorX
-	u.savedCursorY = u.inputState.CursorY
 }

@@ -14,10 +14,42 @@
 
 package textinput
 
+import (
+	"io"
+)
+
 func ConvertUTF16CountToByteCount(text string, c int) int {
 	return convertUTF16CountToByteCount(text, c)
 }
 
 func ConvertByteCountToUTF16Count(text string, c int) int {
 	return convertByteCountToUTF16Count(text, c)
+}
+
+type PieceTable = pieceTable
+
+func (p *PieceTable) Reset(text string) {
+	p.reset(text)
+}
+
+func (p *PieceTable) Replace(text string, start, end int) {
+	p.replace(text, start, end)
+}
+
+func (p *PieceTable) WriteToWithInsertion(w io.Writer, text string, start, end int) (int64, error) {
+	return p.writeToWithInsertion(w, text, start, end)
+}
+
+func (p *PieceTable) Undo() (int, int, bool) {
+	return p.undo()
+}
+
+func (p *PieceTable) Redo() (int, int, bool) {
+	return p.redo()
+}
+
+type TextInputState = textInputState
+
+func (p *PieceTable) UpdateByIME(state TextInputState, start, end int) int {
+	return p.updateByIME(state, start, end)
 }

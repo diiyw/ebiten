@@ -47,7 +47,7 @@ func roundUp16(x int) int {
 	return (x + 15) &^ 15
 }
 
-func (a *atlas) setPaths(dstBounds image.Rectangle, paths []*Path, antialias bool) {
+func (a *atlas) setPaths(dstBounds image.Rectangle, paths []*Path, bounds []image.Rectangle, antialias bool) {
 	// Reset the members.
 	a.pathRenderingBounds = slices.Delete(a.pathRenderingBounds, 0, len(a.pathRenderingBounds))
 	a.atlasRegions = slices.Delete(a.atlasRegions, 0, len(a.atlasRegions))
@@ -60,7 +60,7 @@ func (a *atlas) setPaths(dstBounds image.Rectangle, paths []*Path, antialias boo
 
 	a.pathRenderingBounds = slices.Grow(a.pathRenderingBounds, len(paths))[:len(paths)]
 	for i, p := range paths {
-		b := p.Bounds().Intersect(dstBounds)
+		b := p.Bounds().Intersect(bounds[i]).Intersect(dstBounds)
 		// Round up the size to 16px in order to encourage reusing sub image cache.
 		a.pathRenderingBounds[i] = image.Rectangle{
 			Min: b.Min,
@@ -90,8 +90,13 @@ func (a *atlas) setPaths(dstBounds image.Rectangle, paths []*Path, antialias boo
 		a.pathIndexToAtlasRegionIndex[r.pathIndex] = i
 	}
 
+	w, h := dstBounds.Dx(), dstBounds.Dy()
+	// For antialiasing, doubled regions in the X direction are used.
+	if antialias {
+		w *= 2
+	}
 	// Use 2^n - 1, as a region in internal/atlas has 1px padding.
-	maxImageSize := max(4093, dstBounds.Dx(), dstBounds.Dy())
+	maxImageSize := max(4093, w, h)
 
 	// Pack the regions into an atlas with a very simple algorithm:
 	// Order the regions by height and then place them in a row.
@@ -104,6 +109,7 @@ func (a *atlas) setPaths(dstBounds image.Rectangle, paths []*Path, antialias boo
 		var currentPosition image.Point
 		for i := range a.atlasRegions {
 			pb := a.pathRenderingBounds[a.atlasRegions[i].pathIndex]
+			// TODO: What if s already exceeds maxImageSize (#3357)?
 			s := pb.Size()
 			// An additional image for antialiasing must be on the same atlas,
 			// so extend the width and use it as a sub image.
@@ -113,15 +119,17 @@ func (a *atlas) setPaths(dstBounds image.Rectangle, paths []*Path, antialias boo
 			if i == 0 {
 				currentRowHeight = s.Y
 			} else if currentPosition.X+s.X > maxImageSize {
+				// Try the next row.
 				currentPosition.X = 0
+				currentPosition.Y += currentRowHeight
 				if currentPosition.Y+s.Y > maxImageSize {
 					atlasImageIndex++
 					a.atlasSizes = append(a.atlasSizes, image.Point{})
 					currentPosition.Y = 0
+					currentRowHeight = s.Y
 				} else {
-					currentPosition.Y += currentRowHeight
+					currentRowHeight = max(currentRowHeight, s.Y)
 				}
-				currentRowHeight = s.Y
 			}
 			a.atlasRegions[i].imageIndex = atlasImageIndex
 			a.atlasRegions[i].imageBounds = image.Rectangle{

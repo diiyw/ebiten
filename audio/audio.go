@@ -320,7 +320,8 @@ func (c *Context) SampleRate() int {
 // This means that if a Player plays an infinite stream,
 // the object is never GCed unless Close is called.
 type Player struct {
-	p *playerImpl
+	p       *playerImpl
+	cleanup runtime.Cleanup
 }
 
 // NewPlayer creates a new player with the given stream.
@@ -351,9 +352,9 @@ func (c *Context) NewPlayer(src io.Reader) (*Player, error) {
 		return nil, err
 	}
 
-	p := &Player{pi}
+	p := &Player{p: pi}
 
-	runtime.SetFinalizer(p, (*Player).finalize)
+	p.cleanup = runtime.AddCleanup(p, (*playerImpl).finalize, p.p)
 
 	return p, nil
 }
@@ -385,9 +386,8 @@ func (c *Context) NewPlayerF32(src io.Reader) (*Player, error) {
 		return nil, err
 	}
 
-	p := &Player{pi}
-
-	runtime.SetFinalizer(p, (*Player).finalize)
+	p := &Player{p: pi}
+	p.cleanup = runtime.AddCleanup(p, (*playerImpl).finalize, p.p)
 
 	return p, nil
 }
@@ -436,8 +436,7 @@ func NewPlayerFromBytes(context *Context, src []byte) *Player {
 	return context.NewPlayerFromBytes(src)
 }
 
-func (p *Player) finalize() {
-	runtime.SetFinalizer(p, nil)
+func (p *playerImpl) finalize() {
 	if !p.IsPlaying() {
 		_ = p.Close()
 	}
@@ -557,7 +556,7 @@ func (h *hookerImpl) AppendHookOnBeforeUpdate(f func() error) {
 }
 
 // ResampleReader converts the sample rate of the given singed 16bit integer, little-endian, 2 channels (stereo) stream.
-// size is the length of the source stream in bytes.
+// size is the length of the source stream in bytes. 0 indicates the length is unknown.
 // from is the original sample rate.
 // to is the target sample rate.
 //
@@ -574,7 +573,7 @@ func ResampleReader(source io.Reader, size int64, from, to int) io.Reader {
 }
 
 // ResampleReaderF32 converts the sample rate of the given 32bit float, little-endian, 2 channels (stereo) stream.
-// size is the length of the source stream in bytes.
+// size is the length of the source stream in bytes. 0 indicates the length is unknown.
 // from is the original sample rate.
 // to is the target sample rate.
 //
@@ -591,7 +590,7 @@ func ResampleReaderF32(source io.Reader, size int64, from, to int) io.Reader {
 }
 
 // Resample converts the sample rate of the given singed 16bit integer, little-endian, 2 channels (stereo) stream.
-// size is the length of the source stream in bytes.
+// size is the length of the source stream in bytes. 0 indicates the length is unknown.
 // from is the original sample rate.
 // to is the target sample rate.
 //
@@ -606,7 +605,7 @@ func Resample(source io.ReadSeeker, size int64, from, to int) io.ReadSeeker {
 }
 
 // ResampleF32 converts the sample rate of the given 32bit float, little-endian, 2 channels (stereo) stream.
-// size is the length of the source stream in bytes.
+// size is the length of the source stream in bytes. 0 indicates the length is unknown.
 // from is the original sample rate.
 // to is the target sample rate.
 //

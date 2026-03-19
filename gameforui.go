@@ -20,6 +20,7 @@ import (
 	"sync/atomic"
 
 	"github.com/hajimehoshi/ebiten/v2/internal/atlas"
+	"github.com/hajimehoshi/ebiten/v2/internal/inputstate"
 	"github.com/hajimehoshi/ebiten/v2/internal/ui"
 )
 
@@ -55,12 +56,7 @@ func (g *gameForUI) NewOffscreenImage(width, height int) *ui.Image {
 	// The shader program for the screen is special and doesn't work well with an image on an atlas.
 	// An image on an atlas is surrounded by a transparent edge,
 	// and the shader program unexpectedly picks the pixel on the edges.
-	imageType := atlas.ImageTypeUnmanaged
-	if ui.Get().IsScreenClearedEveryFrame() {
-		// A volatile image is also always isolated.
-		imageType = atlas.ImageTypeVolatile
-	}
-	g.offscreen = newImage(image.Rect(0, 0, width, height), imageType)
+	g.offscreen = newImage(image.Rect(0, 0, width, height), atlas.ImageTypeUnmanaged)
 	return g.offscreen.image
 }
 
@@ -94,7 +90,7 @@ func (g *gameForUI) Layout(outsideWidth, outsideHeight float64) (float64, float6
 }
 
 func (g *gameForUI) UpdateInputState(fn func(*ui.InputState)) {
-	theInputState.update(fn)
+	inputstate.Get().Update(fn)
 }
 
 func (g *gameForUI) Update() error {

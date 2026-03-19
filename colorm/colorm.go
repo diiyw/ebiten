@@ -21,19 +21,21 @@ import (
 
 	"github.com/hajimehoshi/ebiten/v2"
 	"github.com/hajimehoshi/ebiten/v2/internal/affine"
-	"github.com/hajimehoshi/ebiten/v2/internal/builtinshader"
+	"github.com/hajimehoshi/ebiten/v2/internal/colormshader"
 )
 
 // Dim is the dimension of a ColorM.
 const Dim = affine.ColorMDim
 
-// ColorM represents a matrix to transform coloring when rendering an image.
+// ColorM represents a matrix to transform coloring when rendering an image. The matrix
+// is applied by a fragment shader to each pixel during the rendering process.
 //
 // ColorM is applied to the straight alpha color
 // while an Image's pixels' format is alpha premultiplied.
 // Before applying a matrix, a color is un-multiplied, and after applying the matrix,
 // the color is multiplied again.
-//
+// The pixel input and output are expected to be r,g,b,a values in the range 0 to 1.
+
 // The initial value is identity.
 type ColorM struct {
 	impl affine.ColorM
@@ -152,14 +154,14 @@ func uniforms(c ColorM) map[string]any {
 	c.affineColorM().Elements(body[:], translation[:])
 
 	uniforms := map[string]any{}
-	uniforms[builtinshader.UniformColorMBody] = body[:]
-	uniforms[builtinshader.UniformColorMTranslation] = translation[:]
+	uniforms[colormshader.UniformColorMBody] = body[:]
+	uniforms[colormshader.UniformColorMTranslation] = translation[:]
 	return uniforms
 }
 
 type builtinShaderKey struct {
-	filter  builtinshader.Filter
-	address builtinshader.Address
+	filter  colormshader.Filter
+	address colormshader.Address
 }
 
 var (
@@ -167,7 +169,7 @@ var (
 	builtinShadersM sync.Mutex
 )
 
-func builtinShader(filter builtinshader.Filter, address builtinshader.Address) *ebiten.Shader {
+func builtinShader(filter colormshader.Filter, address colormshader.Address) *ebiten.Shader {
 	builtinShadersM.Lock()
 	defer builtinShadersM.Unlock()
 
@@ -179,7 +181,7 @@ func builtinShader(filter builtinshader.Filter, address builtinshader.Address) *
 		return s
 	}
 
-	src := builtinshader.ShaderSource(filter, address, true)
+	src := colormshader.ShaderSource(filter, address)
 	s, err := ebiten.NewShader(src)
 	if err != nil {
 		panic(fmt.Sprintf("colorm: NewShader for a built-in shader failed: %v", err))

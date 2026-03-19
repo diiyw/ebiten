@@ -44,24 +44,14 @@ const (
 
 const AddressCount = 3
 
-const (
-	UniformColorMBody        = "ColorMBody"
-	UniformColorMTranslation = "ColorMTranslation"
-)
-
 var (
-	shaders  [FilterCount][AddressCount][2][]byte
+	shaders  [FilterCount][AddressCount][]byte
 	shadersM sync.Mutex
 )
 
 var tmpl = template.Must(template.New("tmpl").Parse(`//kage:unit pixels
 
 package main
-
-{{if .UseColorM}}
-var ColorMBody mat4
-var ColorMTranslation vec4
-{{end}}
 
 {{if eq .Address .AddressRepeat}}
 func adjustSrcPosForAddressRepeat(p vec2) vec2 {
@@ -119,22 +109,8 @@ func Fragment(dstPos vec4, srcPos vec2, color vec4) vec4 {
 	clr := mix(mix(c0, c1, rate.x), mix(c2, c3, rate.x), rate.y)
 {{end}}
 
-{{if .UseColorM}}
-	// Un-premultiply alpha.
-	// When the alpha is 0, 1-sign(alpha) is 1.0, which means division does nothing.
-	clr.rgb /= clr.a + (1-sign(clr.a))
-	// Apply the clr matrix.
-	clr = (ColorMBody * clr) + ColorMTranslation
-	// Premultiply alpha
-	clr.rgb *= clr.a
 	// Apply the color scale.
 	clr *= color
-	// Clamp the output.
-	clr.rgb = min(clr.rgb, clr.a)
-{{else}}
-	// Apply the color scale.
-	clr *= color
-{{end}}
 
 	return clr
 }
@@ -142,17 +118,11 @@ func Fragment(dstPos vec4, srcPos vec2, color vec4) vec4 {
 `))
 
 // ShaderSource returns the built-in shader source based on the given parameters.
-//
-// The returned shader always uses a color matrix so far.
-func ShaderSource(filter Filter, address Address, useColorM bool) []byte {
+func ShaderSource(filter Filter, address Address) []byte {
 	shadersM.Lock()
 	defer shadersM.Unlock()
 
-	var c int
-	if useColorM {
-		c = 1
-	}
-	if s := shaders[filter][address][c]; s != nil {
+	if s := shaders[filter][address]; s != nil {
 		return s
 	}
 
@@ -166,7 +136,6 @@ func ShaderSource(filter Filter, address Address, useColorM bool) []byte {
 		AddressUnsafe      Address
 		AddressClampToZero Address
 		AddressRepeat      Address
-		UseColorM          bool
 	}{
 		Filter:             filter,
 		FilterNearest:      FilterNearest,
@@ -176,13 +145,12 @@ func ShaderSource(filter Filter, address Address, useColorM bool) []byte {
 		AddressUnsafe:      AddressUnsafe,
 		AddressClampToZero: AddressClampToZero,
 		AddressRepeat:      AddressRepeat,
-		UseColorM:          useColorM,
 	}); err != nil {
 		panic(fmt.Sprintf("builtinshader: tmpl.Execute failed: %v", err))
 	}
 
 	b := buf.Bytes()
-	shaders[filter][address][c] = b
+	shaders[filter][address] = b
 	return b
 }
 

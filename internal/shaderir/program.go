@@ -373,21 +373,21 @@ func IsValidSwizzling(s string) bool {
 	switch {
 	case strings.IndexByte(xyzw, s[0]) >= 0:
 		for _, c := range s {
-			if strings.IndexRune(xyzw, c) == -1 {
+			if !strings.ContainsRune(xyzw, c) {
 				return false
 			}
 		}
 		return true
 	case strings.IndexByte(rgba, s[0]) >= 0:
 		for _, c := range s {
-			if strings.IndexRune(rgba, c) == -1 {
+			if !strings.ContainsRune(rgba, c) {
 				return false
 			}
 		}
 		return true
 	case strings.IndexByte(strq, s[0]) >= 0:
 		for _, c := range s {
-			if strings.IndexRune(strq, c) == -1 {
+			if !strings.ContainsRune(strq, c) {
 				return false
 			}
 		}
@@ -399,7 +399,6 @@ func IsValidSwizzling(s string) bool {
 func (p *Program) ReachableFuncsFromBlock(block *Block) []*Func {
 	indexToFunc := map[int]*Func{}
 	for _, f := range p.Funcs {
-		f := f
 		indexToFunc[f.Index] = &f
 	}
 
@@ -455,7 +454,6 @@ func walkExprsInExpr(f func(expr *Expr), expr *Expr) {
 func (p *Program) appendReachableUniformVariablesFromBlock(indices []int, block *Block) []int {
 	indexToFunc := map[int]*Func{}
 	for _, f := range p.Funcs {
-		f := f
 		indexToFunc[f.Index] = &f
 	}
 

@@ -15,18 +15,20 @@
 package textinput
 
 import (
+	"errors"
 	"image"
 	"sync"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
 
+	"github.com/hajimehoshi/ebiten/v2"
 	"github.com/hajimehoshi/ebiten/v2/internal/microsoftgdk"
 	"github.com/hajimehoshi/ebiten/v2/internal/ui"
 )
 
 type textInput struct {
-	session *session
+	session session
 
 	origWndProc     uintptr
 	wndProcCallback uintptr
@@ -47,20 +49,19 @@ func (t *textInput) Start(bounds image.Rectangle) (<-chan textInputState, func()
 		return nil, nil
 	}
 
-	var session *session
+	var ch chan textInputState
 	var err error
-	ui.Get().RunOnMainThread(func() {
-		t.end()
+	ebiten.RunOnMainThread(func() {
+		t.session.end()
 		err = t.start(bounds)
-		session = newSession()
-		t.session = session
+		ch, _ = t.session.start()
 	})
 	if err != nil {
-		session.ch <- textInputState{Error: err}
-		session.end()
+		t.session.send(textInputState{Error: err})
+		t.session.end()
 	}
-	return session.ch, func() {
-		ui.Get().RunOnMainThread(func() {
+	return ch, func() {
+		ebiten.RunOnMainThread(func() {
 			// Disable IME again.
 			if t.immContext != 0 {
 				return
@@ -71,7 +72,7 @@ func (t *textInput) Start(bounds image.Rectangle) (<-chan textInputState, func()
 				return
 			}
 			t.immContext = c
-			t.end()
+			t.session.end()
 		})
 	}
 }
@@ -137,10 +138,6 @@ func (t *textInput) start(bounds image.Rectangle) error {
 }
 
 func (t *textInput) wndProc(hWnd uintptr, uMsg uint32, wParam, lParam uintptr) uintptr {
-	if t.session == nil {
-		return _CallWindowProcW(t.origWndProc, hWnd, uMsg, wParam, lParam)
-	}
-
 	switch uMsg {
 	case _WM_IME_SETCONTEXT:
 		// Draw preedit text by an application side.
@@ -151,18 +148,21 @@ func (t *textInput) wndProc(hWnd uintptr, uMsg uint32, wParam, lParam uintptr) u
 		if lParam&(_GCS_RESULTSTR|_GCS_COMPSTR) != 0 {
 			if lParam&_GCS_RESULTSTR != 0 {
 				if err := t.commit(); err != nil {
-					t.session.ch <- textInputState{Error: err}
-					t.end()
+					t.session.send(textInputState{Error: err})
+					t.session.end()
 				}
 			}
 			if lParam&_GCS_COMPSTR != 0 {
 				if err := t.update(); err != nil {
-					t.session.ch <- textInputState{Error: err}
-					t.end()
+					t.session.send(textInputState{Error: err})
+					t.session.end()
 				}
 			}
 			return 1
 		}
+	case _WM_IME_ENDCOMPOSITION:
+		t.send("", 0, 0, false)
+		return 1
 	case _WM_CHAR, _WM_SYSCHAR:
 		if wParam >= 0xd800 && wParam <= 0xdbff {
 			t.highSurrogate = uint16(wParam)
@@ -200,39 +200,27 @@ func (t *textInput) wndProc(hWnd uintptr, uMsg uint32, wParam, lParam uintptr) u
 
 // send must be called from the main thread.
 func (t *textInput) send(text string, startInBytes, endInBytes int, committed bool) {
-	if t.session != nil {
-		t.session.trySend(textInputState{
-			Text:                             text,
-			CompositionSelectionStartInBytes: startInBytes,
-			CompositionSelectionEndInBytes:   endInBytes,
-			Committed:                        committed,
-		})
-	}
+	t.session.send(textInputState{
+		Text:                             text,
+		CompositionSelectionStartInBytes: startInBytes,
+		CompositionSelectionEndInBytes:   endInBytes,
+		Committed:                        committed,
+	})
 	if committed {
-		t.end()
+		t.session.end()
 	}
-}
-
-// end must be called from the main thread.
-func (t *textInput) end() {
-	if t.session == nil {
-		return
-	}
-
-	t.session.end()
-	t.session = nil
 }
 
 // update must be called from the main thread.
-func (t *textInput) update() (ferr error) {
+func (t *textInput) update() (err error) {
 	if t.err != nil {
 		return t.err
 	}
 
 	hIMC := _ImmGetContext(t.window)
 	defer func() {
-		if err := _ImmReleaseContext(t.window, hIMC); err != nil && ferr != nil {
-			ferr = err
+		if winErr := _ImmReleaseContext(t.window, hIMC); winErr != nil {
+			err = errors.Join(err, winErr)
 		}
 	}()
 
@@ -267,8 +255,8 @@ func (t *textInput) update() (ferr error) {
 		return err
 	}
 
-	var start16 int
-	var end16 int
+	start16 := len(buffer16)
+	end16 := len(buffer16)
 	if len(clause) > 0 {
 		for i, c := range clause[:len(clause)-1] {
 			if int(c) == len(attr) {
@@ -288,15 +276,15 @@ func (t *textInput) update() (ferr error) {
 }
 
 // commit must be called from the main thread.
-func (t *textInput) commit() (ferr error) {
+func (t *textInput) commit() (err error) {
 	if t.err != nil {
 		return t.err
 	}
 
 	hIMC := _ImmGetContext(t.window)
 	defer func() {
-		if err := _ImmReleaseContext(t.window, hIMC); err != nil && ferr != nil {
-			ferr = err
+		if winErr := _ImmReleaseContext(t.window, hIMC); winErr != nil {
+			err = errors.Join(err, winErr)
 		}
 	}()
 

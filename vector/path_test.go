@@ -15,8 +15,13 @@
 package vector_test
 
 import (
+	"image"
+	"image/color"
+	"runtime"
+	"sync"
 	"testing"
 
+	"github.com/hajimehoshi/ebiten/v2"
 	"github.com/hajimehoshi/ebiten/v2/vector"
 )
 
@@ -195,5 +200,240 @@ func TestAddPathSelf(t *testing.T) {
 	}
 	if got, want := vector.SubPathCount(&path), 2; got != want {
 		t.Errorf("expected close count to be %d, got %d", want, got)
+	}
+}
+
+func TestArcAndGeoM(t *testing.T) {
+	if runtime.GOOS == "js" {
+		t.Skip("the result might be flaky in this environment")
+	}
+
+	testCases := []struct {
+		name     string
+		geoM     ebiten.GeoM
+		origPath vector.Path
+		refPath  vector.Path
+	}{
+		{
+			name: "identity",
+			geoM: ebiten.GeoM{},
+			origPath: func() (p vector.Path) {
+				p.MoveTo(0, 0)
+				p.ArcTo(16, 0, 16, 16, 16)
+				return p
+			}(),
+			refPath: func() (p vector.Path) {
+				p.MoveTo(0, 0)
+				p.ArcTo(16, 0, 16, 16, 16)
+				return p
+			}(),
+		},
+		{
+			name: "scale 2x",
+			geoM: func() (geoM ebiten.GeoM) {
+				geoM.Scale(2, 2)
+				return geoM
+			}(),
+			origPath: func() (p vector.Path) {
+				p.MoveTo(0, 0)
+				p.ArcTo(8, 0, 8, 8, 8)
+				return p
+			}(),
+			refPath: func() (p vector.Path) {
+				p.MoveTo(0, 0)
+				p.ArcTo(16, 0, 16, 16, 16)
+				return p
+			}(),
+		},
+		{
+			name: "scale 256x",
+			geoM: func() (geoM ebiten.GeoM) {
+				geoM.Scale(256, 256)
+				return geoM
+			}(),
+			origPath: func() (p vector.Path) {
+				p.MoveTo(0, 0)
+				p.ArcTo(1.0/16.0, 0, 1.0/16.0, 1.0/16.0, 1.0/16.0)
+				return p
+			}(),
+			refPath: func() (p vector.Path) {
+				p.MoveTo(0, 0)
+				p.ArcTo(16, 0, 16, 16, 16)
+				return p
+			}(),
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			origDst := ebiten.NewImage(16, 16)
+			defer origDst.Deallocate()
+			refDst := ebiten.NewImage(16, 16)
+			defer refDst.Deallocate()
+
+			var path vector.Path
+			op := &vector.AddPathOptions{}
+			op.GeoM = tc.geoM
+			path.AddPath(&tc.origPath, op)
+
+			strokeOp := &vector.StrokeOptions{
+				Width: 1,
+			}
+			// Do not use alpha blending, which can cause non-deterministic results.
+			vector.StrokePath(origDst, &path, strokeOp, nil)
+			vector.StrokePath(refDst, &tc.refPath, strokeOp, nil)
+
+			for j := range 16 {
+				for i := range 16 {
+					got := origDst.At(i, j)
+					want := refDst.At(i, j)
+					if got != want {
+						t.Errorf("At(%d, %d): got: %v, want: %v", i, j, got, want)
+					}
+				}
+			}
+		})
+	}
+}
+
+// Issue #3330
+func TestFillPathSubImage(t *testing.T) {
+	dst := ebiten.NewImage(16, 16)
+
+	dst2 := dst.SubImage(image.Rect(0, 0, 8, 8)).(*ebiten.Image)
+	var p vector.Path
+	p.MoveTo(0, 0)
+	p.LineTo(8, 0)
+	p.LineTo(8, 8)
+	p.LineTo(0, 8)
+	p.Close()
+	op := &vector.DrawPathOptions{}
+	op.ColorScale.ScaleWithColor(color.White)
+	op.AntiAlias = true
+	vector.FillPath(dst2, &p, nil, op)
+	if got, want := dst.At(5, 5), (color.RGBA{0xff, 0xff, 0xff, 0xff}); got != want {
+		t.Errorf("got: %v, want: %v", got, want)
+	}
+	if got, want := dst2.At(5, 5), (color.RGBA{0xff, 0xff, 0xff, 0xff}); got != want {
+		t.Errorf("got: %v, want: %v", got, want)
+	}
+
+	dst3 := dst2.SubImage(image.Rect(4, 4, 8, 8)).(*ebiten.Image)
+	var p2 vector.Path
+	p2.MoveTo(4, 4)
+	p2.LineTo(8, 4)
+	p2.LineTo(8, 8)
+	p2.LineTo(4, 8)
+	p2.Close()
+	op.ColorScale.Reset()
+	op.ColorScale.ScaleWithColor(color.Black)
+	vector.FillPath(dst3, &p2, nil, op)
+	if got, want := dst.At(5, 5), (color.RGBA{0x00, 0x00, 0x00, 0xff}); got != want {
+		t.Errorf("got: %v, want: %v", got, want)
+	}
+	if got, want := dst2.At(5, 5), (color.RGBA{0x00, 0x00, 0x00, 0xff}); got != want {
+		t.Errorf("got: %v, want: %v", got, want)
+	}
+	if got, want := dst3.At(5, 5), (color.RGBA{0x00, 0x00, 0x00, 0xff}); got != want {
+		t.Errorf("got: %v, want: %v", got, want)
+	}
+}
+
+func TestRaceConditionWithSubImage(t *testing.T) {
+	const w, h = 16, 16
+	src := ebiten.NewImage(w, h)
+
+	var wg sync.WaitGroup
+	for i := range h {
+		for j := range w {
+			wg.Go(func() {
+				subImg := src.SubImage(image.Rect(i, j, i+1, j+1)).(*ebiten.Image)
+				var p vector.Path
+				p.MoveTo(0, 0)
+				p.LineTo(w, 0)
+				p.LineTo(w, h)
+				p.LineTo(0, h)
+				p.Close()
+				op := &vector.DrawPathOptions{}
+				op.ColorScale.ScaleWithColor(color.White)
+				op.AntiAlias = true
+				vector.FillPath(subImg, &p, nil, op)
+				dst := ebiten.NewImage(w, h)
+				dst.DrawImage(subImg, nil)
+			})
+		}
+	}
+	wg.Wait()
+}
+
+// Issue #3355
+func TestFillPathSubImageAndImage(t *testing.T) {
+	dst := ebiten.NewImage(200, 200)
+	defer dst.Deallocate()
+	for i := range 100 {
+		var path vector.Path
+		path.LineTo(0, 0)
+		path.LineTo(0, 100)
+		path.LineTo(100, 100)
+		path.LineTo(100, 0)
+		path.LineTo(0, 0)
+		path.Close()
+		drawOp := &vector.DrawPathOptions{}
+		drawOp.ColorScale.ScaleWithColor(color.RGBA{255, 0, 0, 255})
+		subDst := dst.SubImage(image.Rect(0, 0, 100, 100)).(*ebiten.Image)
+		vector.FillPath(subDst, &path, nil, drawOp)
+		drawOp.ColorScale.Reset()
+		drawOp.ColorScale.ScaleWithColor(color.RGBA{0, 255, 0, 255})
+		vector.FillPath(dst, &path, nil, drawOp)
+
+		if got, want := dst.At(50, 50), (color.RGBA{0, 255, 0, 255}); got != want {
+			t.Errorf("%d: got: %v, want: %v", i, got, want)
+		}
+	}
+}
+
+// Issue #3366
+func TestFillPathFillRule(t *testing.T) {
+	testCases := []struct {
+		name     string
+		fillRule vector.FillRule
+		expected color.RGBA
+	}{
+		{
+			name:     "evenOdd",
+			fillRule: vector.FillRuleEvenOdd,
+			expected: color.RGBA{0, 0, 0, 0},
+		},
+		{
+			name:     "nonZero",
+			fillRule: vector.FillRuleNonZero,
+			expected: color.RGBA{0xff, 0xff, 0xff, 0xff},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			dst := ebiten.NewImage(16, 16)
+			defer dst.Deallocate()
+
+			var p vector.Path
+			p.MoveTo(0, 0)
+			p.LineTo(16, 0)
+			p.LineTo(16, 16)
+			p.LineTo(0, 16)
+			p.Close()
+			p.MoveTo(4, 4)
+			p.LineTo(12, 4)
+			p.LineTo(12, 12)
+			p.LineTo(4, 12)
+			p.Close()
+			fillOp := &vector.FillOptions{}
+			fillOp.FillRule = tc.fillRule
+			vector.FillPath(dst, &p, fillOp, nil)
+
+			if got, want := dst.At(8, 8), tc.expected; got != want {
+				t.Errorf("got: %v, want: %v", got, want)
+			}
+		})
 	}
 }

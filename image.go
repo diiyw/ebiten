@@ -19,6 +19,7 @@ import (
 	"image"
 	"image/color"
 	"math"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"unsafe"
@@ -26,10 +27,10 @@ import (
 	"github.com/hajimehoshi/ebiten/v2/internal/affine"
 	"github.com/hajimehoshi/ebiten/v2/internal/atlas"
 	"github.com/hajimehoshi/ebiten/v2/internal/builtinshader"
+	"github.com/hajimehoshi/ebiten/v2/internal/colormshader"
 	"github.com/hajimehoshi/ebiten/v2/internal/graphics"
 	"github.com/hajimehoshi/ebiten/v2/internal/graphicscommand"
 	"github.com/hajimehoshi/ebiten/v2/internal/graphicsdriver"
-	"github.com/hajimehoshi/ebiten/v2/internal/restorable"
 	"github.com/hajimehoshi/ebiten/v2/internal/shaderir"
 	"github.com/hajimehoshi/ebiten/v2/internal/ui"
 )
@@ -71,13 +72,21 @@ type Image struct {
 	atime atomic.Int64
 
 	// usageCallbacks are callbacks that are invoked when the image is used.
-	usageCallbacks map[int64]func()
+	// usageCallbacks is valid only when the image is not a sub-image.
+	usageCallbacks map[int64]usageCallback
 
 	// inUsageCallbacks reports whether the image is in usageCallbacks.
-	inUsageCallbacks bool
+	inUsageCallbacks atomic.Bool
+
+	// usageCallbacksM is a mutex for usageCallbacks.
+	usageCallbacksM sync.Mutex
 
 	// Do not add a 'buffering' member that are resolved lazily.
 	// This tends to forget resolving the buffer easily (#2362).
+}
+
+type usageCallback struct {
+	fn func(image *Image)
 }
 
 func (i *Image) copyCheck() {
@@ -315,41 +324,17 @@ func (i *Image) DrawImage(img *Image, options *DrawImageOptions) {
 		var translation [4]float32
 		colorm.Elements(body[:], translation[:])
 		i.tmpUniforms = shader.appendUniforms(i.tmpUniforms, map[string]any{
-			builtinshader.UniformColorMBody:        body[:],
-			builtinshader.UniformColorMTranslation: translation[:],
+			colormshader.UniformColorMBody:        body[:],
+			colormshader.UniformColorMTranslation: translation[:],
 		})
 	}
 
 	dr := i.adjustedBounds()
-	hint := restorable.HintNone
-	if overwritesDstRegion(options.Blend, dr, geoM, sx0, sy0, sx1, sy1) {
-		hint = restorable.HintOverwriteDstRegion
-	}
-
 	skipMipmap := options.DisableMipmaps
 	if !skipMipmap {
 		skipMipmap = canSkipMipmap(det, filter)
 	}
-	i.image.DrawTriangles(srcs, vs, is, blend, dr, [graphics.ShaderSrcImageCount]image.Rectangle{img.adjustedBounds()}, shader.shader, i.tmpUniforms, graphicsdriver.FillRuleFillAll, skipMipmap, false, hint)
-}
-
-// overwritesDstRegion reports whether the given parameters overwrite the destination region completely.
-func overwritesDstRegion(blend Blend, dstRegion image.Rectangle, geoM GeoM, sx0, sy0, sx1, sy1 int) bool {
-	// TODO: More precisely, BlendFactorDestinationRGB, BlendFactorDestinationAlpha, and operations should be checked.
-	if blend != BlendCopy && blend != BlendClear {
-		return false
-	}
-	// Check the result vertices is not a rotated rectangle.
-	if geoM.b != 0 || geoM.c != 0 {
-		return false
-	}
-	// Check the result vertices completely covers dstRegion.
-	x0, y0 := geoM.Apply(float64(sx0), float64(sy0))
-	x1, y1 := geoM.Apply(float64(sx1), float64(sy1))
-	if float64(dstRegion.Min.X) < x0 || float64(dstRegion.Min.Y) < y0 || float64(dstRegion.Max.X) > x1 || float64(dstRegion.Max.Y) > y1 {
-		return false
-	}
-	return true
+	i.image.DrawTriangles(srcs, vs, is, blend, dr, [graphics.ShaderSrcImageCount]image.Rectangle{img.adjustedBounds()}, shader.shader, i.tmpUniforms, skipMipmap)
 }
 
 // Vertex represents a vertex passed to DrawTriangles.
@@ -419,19 +404,19 @@ const (
 	// FillRuleFillAll indicates all the triangles are rendered regardless of overlaps.
 	//
 	// Deprecated: as of v2.9.
-	FillRuleFillAll FillRule = FillRule(graphicsdriver.FillRuleFillAll)
+	FillRuleFillAll FillRule = iota
 
 	// FillRuleNonZero means that triangles are rendered based on the non-zero rule.
 	// If and only if the number of overlaps is not 0, the region is rendered.
 	//
 	// Deprecated: as of v2.9.
-	FillRuleNonZero FillRule = FillRule(graphicsdriver.FillRuleNonZero)
+	FillRuleNonZero
 
 	// FillRuleEvenOdd means that triangles are rendered based on the even-odd rule.
 	// If and only if the number of overlaps is odd, the region is rendered.
 	//
 	// Deprecated: as of v2.9.
-	FillRuleEvenOdd FillRule = FillRule(graphicsdriver.FillRuleEvenOdd)
+	FillRuleEvenOdd
 )
 
 const (
@@ -602,6 +587,11 @@ func (i *Image) DrawTriangles(vertices []Vertex, indices []uint16, img *Image, o
 //
 // When the image i is disposed, DrawTriangles32 does nothing.
 func (i *Image) DrawTriangles32(vertices []Vertex, indices []uint32, img *Image, options *DrawTrianglesOptions) {
+	if options != nil && (options.FillRule != FillRuleFillAll || options.AntiAlias) {
+		drawTrianglesWithStencilBuffer(i, vertices, indices, img, options)
+		return
+	}
+
 	i.copyCheck()
 
 	if img != nil && img.isDisposed() {
@@ -696,8 +686,8 @@ func (i *Image) DrawTriangles32(vertices []Vertex, indices []uint32, img *Image,
 		var translation [4]float32
 		colorm.Elements(body[:], translation[:])
 		i.tmpUniforms = shader.appendUniforms(i.tmpUniforms, map[string]any{
-			builtinshader.UniformColorMBody:        body[:],
-			builtinshader.UniformColorMTranslation: translation[:],
+			colormshader.UniformColorMBody:        body[:],
+			colormshader.UniformColorMTranslation: translation[:],
 		})
 	}
 
@@ -705,7 +695,7 @@ func (i *Image) DrawTriangles32(vertices []Vertex, indices []uint32, img *Image,
 	if !skipMipmap {
 		skipMipmap = filter != builtinshader.FilterLinear
 	}
-	i.image.DrawTriangles(srcs, vs, indices, blend, i.adjustedBounds(), [graphics.ShaderSrcImageCount]image.Rectangle{img.adjustedBounds()}, shader.shader, i.tmpUniforms, graphicsdriver.FillRule(options.FillRule), skipMipmap, options.AntiAlias, restorable.HintNone)
+	i.image.DrawTriangles(srcs, vs, indices, blend, i.adjustedBounds(), [graphics.ShaderSrcImageCount]image.Rectangle{img.adjustedBounds()}, shader.shader, i.tmpUniforms, skipMipmap)
 }
 
 // DrawTrianglesShaderOptions represents options for DrawTrianglesShader.
@@ -820,6 +810,11 @@ func (i *Image) DrawTrianglesShader(vertices []Vertex, indices []uint16, shader 
 //
 // When the image i is disposed, DrawTrianglesShader32 does nothing.
 func (i *Image) DrawTrianglesShader32(vertices []Vertex, indices []uint32, shader *Shader, options *DrawTrianglesShaderOptions) {
+	if options != nil && (options.FillRule != FillRuleFillAll || options.AntiAlias) {
+		drawTrianglesShaderWithStencilBuffer(i, vertices, indices, shader, options)
+		return
+	}
+
 	i.copyCheck()
 
 	if i.isDisposed() {
@@ -937,7 +932,7 @@ func (i *Image) DrawTrianglesShader32(vertices []Vertex, indices []uint32, shade
 	i.tmpUniforms = i.tmpUniforms[:0]
 	i.tmpUniforms = shader.appendUniforms(i.tmpUniforms, options.Uniforms)
 
-	i.image.DrawTriangles(imgs, vs, indices, blend, i.adjustedBounds(), srcRegions, shader.shader, i.tmpUniforms, graphicsdriver.FillRule(options.FillRule), true, options.AntiAlias, restorable.HintNone)
+	i.image.DrawTriangles(imgs, vs, indices, blend, i.adjustedBounds(), srcRegions, shader.shader, i.tmpUniforms, true)
 }
 
 // DrawRectShaderOptions represents options for DrawRectShader.
@@ -1094,13 +1089,8 @@ func (i *Image) DrawRectShader(width, height int, shader *Shader, options *DrawR
 	i.tmpUniforms = shader.appendUniforms(i.tmpUniforms, options.Uniforms)
 
 	dr := i.adjustedBounds()
-	hint := restorable.HintNone
-	// Do not use srcRegions[0].Dx() and srcRegions[0].Dy() as these might be empty.
-	if overwritesDstRegion(options.Blend, dr, geoM, srcRegions[0].Min.X, srcRegions[0].Min.Y, srcRegions[0].Min.X+width, srcRegions[0].Min.Y+height) {
-		hint = restorable.HintOverwriteDstRegion
-	}
 
-	i.image.DrawTriangles(imgs, vs, is, blend, dr, srcRegions, shader.shader, i.tmpUniforms, graphicsdriver.FillRuleFillAll, true, false, hint)
+	i.image.DrawTriangles(imgs, vs, is, blend, dr, srcRegions, shader.shader, i.tmpUniforms, true)
 }
 
 // SubImage returns an image representing the portion of the image p visible through r.
@@ -1531,7 +1521,7 @@ func NewImageFromImageWithOptions(source image.Image, options *NewImageFromImage
 		return i
 	}
 
-	i.WritePixels(imageToBytes(source))
+	i.WritePixels(imageToBytes(source, true))
 	return i
 }
 
@@ -1595,17 +1585,34 @@ func (*Image) private() {
 
 var currentCallbackToken atomic.Int64
 
+//go:linkname originalImage
+func originalImage(img *Image) *Image {
+	if img.isSubImage() {
+		return img.original
+	}
+	return img
+}
+
 //go:linkname addUsageCallback
-func addUsageCallback(img *Image, callback func()) int64 {
+func addUsageCallback(img *Image, callback func(image *Image)) int64 {
 	return img.addUsageCallback(callback)
 }
 
-func (i *Image) addUsageCallback(callback func()) int64 {
-	if i.usageCallbacks == nil {
-		i.usageCallbacks = map[int64]func(){}
+func (i *Image) addUsageCallback(callback func(image *Image)) int64 {
+	if i.isSubImage() {
+		return i.original.addUsageCallback(callback)
 	}
 	token := currentCallbackToken.Add(1)
-	i.usageCallbacks[token] = callback
+
+	i.usageCallbacksM.Lock()
+	defer i.usageCallbacksM.Unlock()
+
+	if i.usageCallbacks == nil {
+		i.usageCallbacks = map[int64]usageCallback{}
+	}
+	i.usageCallbacks[token] = usageCallback{
+		fn: callback,
+	}
 	return token
 }
 
@@ -1615,20 +1622,49 @@ func removeUsageCallback(img *Image, token int64) {
 }
 
 func (i *Image) removeUsageCallback(token int64) {
-	delete(i.usageCallbacks, token)
-}
-
-func (i *Image) invokeUsageCallbacks() {
-	if i.inUsageCallbacks {
+	if i.isSubImage() {
+		i.original.removeUsageCallback(token)
 		return
 	}
 
-	i.inUsageCallbacks = true
-	defer func() {
-		i.inUsageCallbacks = false
+	i.usageCallbacksM.Lock()
+	defer i.usageCallbacksM.Unlock()
+	delete(i.usageCallbacks, token)
+}
+
+var theTmpUsageCallbackSlicePool = sync.Pool{
+	New: func() any {
+		slice := make([]usageCallback, 0, 16)
+		return &slice
+	},
+}
+
+func (i *Image) invokeUsageCallbacks() {
+	if i.isSubImage() {
+		i.original.invokeUsageCallbacks()
+		return
+	}
+
+	// Do not allow recursive calls.
+	if !i.inUsageCallbacks.CompareAndSwap(false, true) {
+		return
+	}
+	defer i.inUsageCallbacks.Store(false)
+
+	tmpUsageCallbackSlice := theTmpUsageCallbackSlicePool.Get().(*[]usageCallback)
+
+	func() {
+		i.usageCallbacksM.Lock()
+		defer i.usageCallbacksM.Unlock()
+		for _, cb := range i.usageCallbacks {
+			*tmpUsageCallbackSlice = append(*tmpUsageCallbackSlice, cb)
+		}
 	}()
 
-	for _, cb := range i.usageCallbacks {
-		cb()
+	for _, cb := range *tmpUsageCallbackSlice {
+		cb.fn(i)
 	}
+
+	*tmpUsageCallbackSlice = slices.Delete(*tmpUsageCallbackSlice, 0, len(*tmpUsageCallbackSlice))
+	theTmpUsageCallbackSlicePool.Put(tmpUsageCallbackSlice)
 }

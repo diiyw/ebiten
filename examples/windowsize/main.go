@@ -49,6 +49,7 @@ var (
 	flagGraphicsLibrary     = flag.String("graphicslibrary", "", "graphics library (e.g. opengl)")
 	flagRunnableOnUnfocused = flag.Bool("runnableonunfocused", true, "whether the app is runnable even on unfocused")
 	flagColorSpace          = flag.String("colorspace", "", "color space ('', 'srgb', or 'display-p3')")
+	flagColorMode           = flag.String("colormode", "", "window color mode ('', 'light', or 'dark')")
 )
 
 func init() {
@@ -73,8 +74,8 @@ func createRandomIconImage() image.Image {
 	bf := float64(rand.IntN(0x100))
 	img := ebiten.NewImage(size, size)
 	pix := make([]byte, 4*size*size)
-	for j := 0; j < size; j++ {
-		for i := 0; i < size; i++ {
+	for j := range size {
+		for i := range size {
 			af := float64(i+j) / float64(2*size)
 			if af > 0 {
 				pix[4*(j*size+i)] = byte(rf * af)
@@ -139,6 +140,19 @@ func cursorModeString(m ebiten.CursorModeType) string {
 		return "Hidden"
 	case ebiten.CursorModeCaptured:
 		return "Captured"
+	default:
+		panic("not reached")
+	}
+}
+
+func colorModeString(c ebiten.ColorMode) string {
+	switch c {
+	case ebiten.ColorModeUnknown:
+		return "Unknown"
+	case ebiten.ColorModeLight:
+		return "Light"
+	case ebiten.ColorModeDark:
+		return "Dark"
 	default:
 		panic("not reached")
 	}
@@ -239,6 +253,19 @@ func (g *game) Update() error {
 				ctx.Button("Reset").On(func() {
 					ebiten.SetWindowIcon(nil)
 				})
+
+				ctx.Text("Window Color Mode")
+				mode := ebiten.WindowColorMode()
+				ctx.Button(colorModeString(mode)).On(func() {
+					switch mode {
+					case ebiten.ColorModeLight:
+						ebiten.SetWindowColorMode(ebiten.ColorModeDark)
+					case ebiten.ColorModeDark:
+						ebiten.SetWindowColorMode(ebiten.ColorModeUnknown)
+					case ebiten.ColorModeUnknown:
+						ebiten.SetWindowColorMode(ebiten.ColorModeLight)
+					}
+				})
 			})
 			ctx.Header("Settings (Rendering)", true, func() {
 				ctx.SetGridLayout([]int{-2, -1}, nil)
@@ -317,7 +344,7 @@ func (g *game) Update() error {
 				}
 			})
 			ctx.Header("Info", true, func() {
-				ctx.SetGridLayout([]int{-2, -1}, nil)
+				ctx.SetGridLayout([]int{-3, -2}, nil)
 
 				ctx.Text("Window Position")
 				wx, wy := ebiten.WindowPosition()
@@ -337,6 +364,10 @@ func (g *game) Update() error {
 				cx, cy := ebiten.CursorPosition()
 				ctx.Text(fmt.Sprintf("(%d, %d)", cx, cy))
 
+				ctx.Text("Cursor (float)")
+				cxf, cyf := ebiten.CursorPositionF()
+				ctx.Text(fmt.Sprintf("(%0.2f, %0.2f)", cxf, cyf))
+
 				ctx.Text("Device Scale Factor")
 				ctx.Text(fmt.Sprintf("%0.2f", ebiten.Monitor().DeviceScaleFactor()))
 
@@ -352,6 +383,9 @@ func (g *game) Update() error {
 
 				ctx.Text("FPS")
 				ctx.Text(fmt.Sprintf("%0.2f", ebiten.ActualFPS()))
+
+				ctx.Text("Color Mode")
+				ctx.Text(colorModeString(ebiten.SystemColorMode()))
 			})
 			ctx.Header("Info (Debug)", true, func() {
 				ctx.SetGridLayout([]int{-2, -1}, nil)
@@ -546,6 +580,14 @@ func main() {
 		op.ColorSpace = ebiten.ColorSpaceSRGB
 	case "display-p3":
 		op.ColorSpace = ebiten.ColorSpaceDisplayP3
+	}
+	switch *flagColorMode {
+	case "light":
+		ebiten.SetWindowColorMode(ebiten.ColorModeLight)
+	case "dark":
+		ebiten.SetWindowColorMode(ebiten.ColorModeDark)
+	default:
+		ebiten.SetWindowColorMode(ebiten.ColorModeUnknown)
 	}
 	op.InitUnfocused = !*flagInitFocused
 	op.ScreenTransparent = *flagTransparent

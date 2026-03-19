@@ -55,9 +55,9 @@ func init() {
 	// Initialize the spot light image.
 	const r = 64
 	alphas := image.Point{r * 2, r * 2}
-	a := image.NewAlpha(image.Rectangle{image.ZP, alphas})
-	for j := 0; j < alphas.Y; j++ {
-		for i := 0; i < alphas.X; i++ {
+	a := image.NewAlpha(image.Rectangle{image.Point{}, alphas})
+	for j := range alphas.Y {
+		for i := range alphas.X {
 			// d is the distance between (i, j) and the (circle) center.
 			d := math.Sqrt(float64((i-r)*(i-r) + (j-r)*(j-r)))
 			// Alphas around the center are 0 and values outside of the circle are 0xff.

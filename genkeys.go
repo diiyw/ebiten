@@ -468,10 +468,10 @@ type Key int
 // Keys.
 const (
 {{range $index, $name := .EbitengineKeyNamesWithoutMods}}Key{{$name}} Key = Key(ui.Key{{$name}})
-{{end}}	KeyAlt     Key = Key(ui.KeyReserved0)
-	KeyControl Key = Key(ui.KeyReserved1)
-	KeyShift   Key = Key(ui.KeyReserved2)
-	KeyMeta    Key = Key(ui.KeyReserved3)
+{{end}}	KeyAlt     Key = Key(ui.KeyAlt)
+	KeyControl Key = Key(ui.KeyControl)
+	KeyShift   Key = Key(ui.KeyShift)
+	KeyMeta    Key = Key(ui.KeyMeta)
 	KeyMax     Key = KeyMeta
 
 	// Keys for backward compatibility.
@@ -479,16 +479,6 @@ const (
 {{range $old, $new := .OldEbitengineKeyNameToUIKeyName}}Key{{$old}} Key = Key(ui.Key{{$new}})
 {{end}}
 )
-
-func (k Key) isValid() bool {
-	switch k {
-	{{range $name := .EbitengineKeyNamesWithoutOld}}case Key{{$name}}:
-		return true
-	{{end}}
-	default:
-		return false
-	}
-}
 
 // String returns a string representing the key.
 //
@@ -539,11 +529,11 @@ type Key int
 
 const (
 {{range $index, $name := .UIKeyNames}}Key{{$name}}{{if eq $index 0}} Key = iota{{end}}
-{{end}}	KeyReserved0
-	KeyReserved1
-	KeyReserved2
-	KeyReserved3
-	KeyMax = KeyReserved3
+{{end}}	KeyAlt
+	KeyControl
+	KeyShift
+	KeyMeta
+	KeyMax = KeyMeta
 )
 
 func (k Key) String() string {
@@ -587,6 +577,11 @@ import (
 
 var uiKeyToGLFWKey = map[Key]glfw.Key{
 {{range $dname, $gname := .UIKeyNameToGLFWKeyName}}Key{{$dname}}: glfw.Key{{$gname}},
+{{end}}
+}
+
+var glfwKeyToUIKey = map[glfw.Key]Key{
+{{range $dname, $gname := .UIKeyNameToGLFWKeyName}}glfw.Key{{$gname}}: Key{{$dname}},
 {{end}}
 }
 `

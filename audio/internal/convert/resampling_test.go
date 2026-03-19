@@ -29,7 +29,7 @@ func soundAt(timeInSecond float64) float64 {
 
 	amp := []float64{1.0, 0.8, 0.6, 0.4, 0.2}
 	v := 0.0
-	for j := 0; j < len(amp); j++ {
+	for j := range amp {
 		v += amp[j] * math.Sin(2.0*math.Pi*timeInSecond*freq*float64(j+1)) / 2
 	}
 	if v > 1 {
@@ -90,10 +90,8 @@ func TestResampling(t *testing.T) {
 		},
 	}
 	for _, c := range cases {
-		c := c
 		t.Run(fmt.Sprintf("%d to %d", c.In, c.Out), func(t *testing.T) {
 			for _, bitDepthInBytes := range []int{2, 4} {
-				bitDepthInBytes := bitDepthInBytes
 				t.Run(fmt.Sprintf("bitDepthInBytes=%d", bitDepthInBytes), func(t *testing.T) {
 					for _, seek := range []bool{false, true} {
 						t.Run(fmt.Sprintf("seek=%v", seek), func(t *testing.T) {
@@ -164,5 +162,22 @@ func TestResampling(t *testing.T) {
 				})
 			}
 		})
+	}
+}
+
+// Issue #3352
+func TestResamplingLen(t *testing.T) {
+	buf := make([]byte, 8*48000)
+	src := bytes.NewReader(buf)
+	resampled := convert.NewResampling(src, int64(len(buf)), 48000, 96000, 4)
+	if got, want := resampled.Length(), int64(len(buf)*2); got != want {
+		t.Errorf("got: %d, want: %d", got, want)
+	}
+	decodedBuf, err := io.ReadAll(resampled)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := len(decodedBuf), int(len(buf)*2); got != want {
+		t.Errorf("got: %d, want: %d", got, want)
 	}
 }

@@ -60,10 +60,8 @@ func TestStereoF32(t *testing.T) {
 		},
 	}
 	for _, tc := range testCases {
-		tc := tc
 		t.Run(tc.Name, func(t *testing.T) {
 			for _, mono := range []bool{false, true} {
-				mono := mono
 				t.Run(fmt.Sprintf("mono=%t", mono), func(t *testing.T) {
 					var inBytes, outBytes []byte
 					for _, v := range tc.In {
@@ -89,7 +87,7 @@ func TestStereoF32(t *testing.T) {
 							break
 						}
 						// Shifting by incomplete bytes should not affect the result.
-						for i := 0; i < 4*2; i++ {
+						for i := range 4 * 2 {
 							if _, err := s.Seek(int64(i), io.SeekCurrent); err != nil {
 								if err != io.EOF {
 									t.Fatal(err)

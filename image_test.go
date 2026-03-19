@@ -270,7 +270,7 @@ func TestImageWritePixels(t *testing.T) {
 	}
 	// Convert to *image.RGBA just in case.
 	img := image.NewRGBA(origImg.Bounds())
-	draw.Draw(img, img.Bounds(), origImg, image.ZP, draw.Src)
+	draw.Draw(img, img.Bounds(), origImg, image.Point{}, draw.Src)
 
 	size := img.Bounds().Size()
 	img0 := ebiten.NewImage(size.X, size.Y)
@@ -399,8 +399,8 @@ func TestNewImageFromSubImage(t *testing.T) {
 	if h2 != sh {
 		t.Errorf("eimg Width: got %v; want %v", h2, sh)
 	}
-	for j := 0; j < h2; j++ {
-		for i := 0; i < w2; i++ {
+	for j := range h2 {
+		for i := range w2 {
 			got := eimg.At(i, j)
 			want := color.RGBAModel.Convert(img.At(i+1, j+1))
 			if got != want {
@@ -495,7 +495,7 @@ func TestImageEdge(t *testing.T) {
 	transparent := color.RGBA{}
 
 	angles := []float64{}
-	for a := 0; a < 1440; a++ {
+	for a := range 1440 {
 		angles = append(angles, float64(a)/1440*2*math.Pi)
 	}
 	for a := 0; a < 4096; a += 3 {
@@ -573,8 +573,8 @@ func TestImageEdge(t *testing.T) {
 						img1.DrawTriangles(vs, is, img0, op)
 					}
 					allTransparent := true
-					for j := 0; j < img1Height; j++ {
-						for i := 0; i < img1Width; i++ {
+					for j := range img1Height {
+						for i := range img1Width {
 							c := img1.At(i, j)
 							if c == transparent {
 								continue
@@ -1854,7 +1854,7 @@ func TestImageZeroSizedMipmap(t *testing.T) {
 
 	op := &ebiten.DrawImageOptions{}
 	op.Filter = ebiten.FilterLinear
-	dst.DrawImage(src.SubImage(image.ZR).(*ebiten.Image), op)
+	dst.DrawImage(src.SubImage(image.Rectangle{}).(*ebiten.Image), op)
 }
 
 // Issue #898
@@ -2074,7 +2074,6 @@ func TestImageDrawTrianglesWithColorM(t *testing.T) {
 		ebiten.ColorScaleModeStraightAlpha,
 		ebiten.ColorScaleModePremultipliedAlpha,
 	} {
-		format := format
 		t.Run(fmt.Sprintf("format%d", format), func(t *testing.T) {
 			var cr, cg, cb, ca float32
 			switch format {
@@ -2203,7 +2202,6 @@ func TestImageDrawTrianglesInterpolatesColors(t *testing.T) {
 		ebiten.ColorScaleModeStraightAlpha,
 		ebiten.ColorScaleModePremultipliedAlpha,
 	} {
-		format := format
 		t.Run(fmt.Sprintf("format%d", format), func(t *testing.T) {
 			dst := ebiten.NewImage(w, h)
 			dst.Fill(color.RGBA{B: 0xff, A: 0xff})
@@ -2316,7 +2314,7 @@ func TestImageDrawOver(t *testing.T) {
 	dst := ebiten.NewImage(w, h)
 	src := image.NewUniform(color.RGBA{R: 0xff, A: 0xff})
 	// This must not cause infinite-loop.
-	draw.Draw(dst, dst.Bounds(), src, image.ZP, draw.Over)
+	draw.Draw(dst, dst.Bounds(), src, image.Point{}, draw.Over)
 	for j := range h {
 		for i := range w {
 			got := dst.At(i, j)
@@ -2379,7 +2377,7 @@ func BenchmarkImageDrawOver(b *testing.B) {
 	dst := ebiten.NewImage(16, 16)
 	src := image.NewUniform(color.Black)
 	for n := 0; n < b.N; n++ {
-		draw.Draw(dst, dst.Bounds(), src, image.ZP, draw.Over)
+		draw.Draw(dst, dst.Bounds(), src, image.Point{}, draw.Over)
 	}
 }
 
@@ -2449,7 +2447,7 @@ func TestImageColorMCopy(t *testing.T) {
 	dst := ebiten.NewImage(w, h)
 	src := ebiten.NewImage(w, h)
 
-	for k := 0; k < 256; k++ {
+	for k := range 256 {
 		op := &ebiten.DrawImageOptions{}
 		op.ColorM.Translate(1, 1, 1, float64(k)/0xff)
 		op.Blend = ebiten.BlendCopy
@@ -2829,7 +2827,6 @@ func TestImageEvenOdd(t *testing.T) {
 
 func TestImageFillRule(t *testing.T) {
 	for _, fillRule := range []ebiten.FillRule{ebiten.FillRuleFillAll, ebiten.FillRuleNonZero, ebiten.FillRuleEvenOdd} {
-		fillRule := fillRule
 		var name string
 		switch fillRule {
 		case ebiten.FillRuleFillAll:
@@ -3828,7 +3825,6 @@ func TestImageColorMAndScale(t *testing.T) {
 		ebiten.ColorScaleModeStraightAlpha,
 		ebiten.ColorScaleModePremultipliedAlpha,
 	} {
-		format := format
 		t.Run(fmt.Sprintf("format%d", format), func(t *testing.T) {
 			dst := ebiten.NewImage(w, h)
 
@@ -4823,27 +4819,23 @@ func TestSubImageRaceConditionWithFill(t *testing.T) {
 	subImages := make(chan *ebiten.Image)
 
 	var wg sync.WaitGroup
-	wg.Add(1)
 	// Create a goroutine to create sub-images.
-	go func() {
-		for i := 0; i < h; i++ {
-			for j := 0; j < w; j++ {
+	wg.Go(func() {
+		for i := range h {
+			for j := range w {
 				subImages <- img.SubImage(image.Rect(i, j, i+1, j+1)).(*ebiten.Image)
 			}
 		}
 		close(subImages)
-		wg.Done()
-	}()
+	})
 
 	// Create goroutines to use the sub-images.
 	for img := range subImages {
-		wg.Add(1)
-		go func() {
-			for j := 0; j < 1000; j++ {
+		wg.Go(func() {
+			for range 1000 {
 				img.Fill(color.RGBA{0xff, 0xff, 0xff, 0xff})
 			}
-			wg.Done()
-		}()
+		})
 	}
 	wg.Wait()
 }
@@ -4855,27 +4847,23 @@ func TestSubImageRaceConditionWithSubImage(t *testing.T) {
 	subImages := make(chan *ebiten.Image)
 
 	var wg sync.WaitGroup
-	wg.Add(1)
 	// Create a goroutine to create sub-images.
-	go func() {
-		for i := 0; i < h; i++ {
-			for j := 0; j < w; j++ {
+	wg.Go(func() {
+		for i := range h {
+			for j := range w {
 				subImages <- img.SubImage(image.Rect(i, j, i+1, j+1)).(*ebiten.Image)
 			}
 		}
 		close(subImages)
-		wg.Done()
-	}()
+	})
 
 	// Create goroutines to use the sub-images.
 	for img := range subImages {
-		wg.Add(1)
-		go func() {
-			for j := 0; j < 1000; j++ {
+		wg.Go(func() {
+			for range 1000 {
 				img.SubImage(img.Bounds())
 			}
-			wg.Done()
-		}()
+		})
 	}
 	wg.Wait()
 }

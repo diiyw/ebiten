@@ -15,10 +15,12 @@
 package metal
 
 import (
-	"runtime/cgo"
+	"fmt"
 	"sync"
+	"time"
 
-	"github.com/hajimehoshi/ebiten/v2/internal/graphicsdriver"
+	"github.com/hajimehoshi/ebiten/v2/internal/cocoa"
+	"github.com/hajimehoshi/ebiten/v2/internal/color"
 	"github.com/hajimehoshi/ebiten/v2/internal/graphicsdriver/metal/ca"
 	"github.com/hajimehoshi/ebiten/v2/internal/graphicsdriver/metal/mtl"
 )
@@ -41,8 +43,17 @@ type view struct {
 
 	once sync.Once
 
-	displayLink  uintptr
-	handleToSelf cgo.Handle
+	caDisplayLink    uintptr
+	metalDisplayLink uintptr
+
+	// The following members are used only with CAMetalDisplayLink.
+	drawableCh              chan ca.MetalDrawable
+	drawableDoneCh          chan struct{}
+	drawableTimer           *time.Timer
+	metalDisplayLinkRunLoop cocoa.NSRunLoop
+
+	// The following members are used only with CADisplayLink.
+	handleToSelf viewHandle
 	fence        *fence
 }
 
@@ -70,12 +81,12 @@ func (v *view) colorPixelFormat() mtl.PixelFormat {
 	return v.ml.PixelFormat()
 }
 
-func (v *view) initialize(device mtl.Device, colorSpace graphicsdriver.ColorSpace) error {
+func (v *view) initialize(device mtl.Device, colorSpace color.ColorSpace) error {
 	v.device = device
 
 	ml, err := ca.NewMetalLayer(colorSpace)
 	if err != nil {
-		return err
+		return fmt.Errorf("metal: ca.NewMetalLayer failed: %w", err)
 	}
 	v.ml = ml
 	v.ml.SetDevice(v.device)
@@ -97,18 +108,35 @@ func (v *view) initialize(device mtl.Device, colorSpace graphicsdriver.ColorSpac
 
 	v.ml.SetMaximumDrawableCount(maximumDrawableCount)
 
-	v.initializeDisplayLink()
+	if err := v.initializeOS(); err != nil {
+		return err
+	}
 
 	return nil
 }
 
-func (v *view) nextDrawable() ca.MetalDrawable {
-	d, err := v.ml.NextDrawable()
-	if err != nil {
-		// Drawable is nil. This can happen at the initial state. Let's wait and see.
-		return ca.MetalDrawable{}
-	}
-	return d
+// viewHandle is a cgo-free replacement for cgo.Handle to pass *view through C callbacks.
+type viewHandle uintptr
+
+var (
+	viewHandleMu      sync.Mutex
+	viewHandleMap     = map[viewHandle]*view{}
+	viewHandleCounter viewHandle
+)
+
+func newViewHandle(v *view) viewHandle {
+	viewHandleMu.Lock()
+	defer viewHandleMu.Unlock()
+	viewHandleCounter++
+	h := viewHandleCounter
+	viewHandleMap[h] = v
+	return h
+}
+
+func (h viewHandle) Value() *view {
+	viewHandleMu.Lock()
+	defer viewHandleMu.Unlock()
+	return viewHandleMap[h]
 }
 
 type fence struct {

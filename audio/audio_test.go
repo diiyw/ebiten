@@ -56,7 +56,7 @@ func TestGC(t *testing.T) {
 	p = nil
 	runtime.GC()
 
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		got = audio.PlayersCountForTesting()
 		if want := 0; got == want {
 			return
@@ -71,15 +71,21 @@ func TestGC(t *testing.T) {
 	t.Errorf("time out")
 }
 
+type infiniteReader struct{}
+
+func (i *infiniteReader) Read(p []byte) (int, error) {
+	for i := range p {
+		p[i] = 0
+	}
+	return len(p), nil
+}
+
 // Issue #853
 func TestSameSourcePlayers(t *testing.T) {
-	// TODO: Fix this (#3216)
-	t.Skip("This test is flaky")
-
 	setup()
 	defer teardown()
 
-	src := bytes.NewReader(make([]byte, 4))
+	src := &infiniteReader{}
 	p0, err := context.NewPlayer(src)
 	if err != nil {
 		t.Fatal(err)
@@ -97,7 +103,7 @@ func TestSameSourcePlayers(t *testing.T) {
 	p0.Play()
 	p1.Play()
 
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		if err := audio.UpdateForTesting(); err != nil {
 			// An error is expected.
 			return

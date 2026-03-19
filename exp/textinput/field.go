@@ -16,6 +16,8 @@ package textinput
 
 import (
 	"image"
+	"io"
+	"strings"
 	"sync"
 )
 
@@ -64,6 +66,7 @@ func isFieldFocused(f *Field) bool {
 	return theFocusedField == f
 }
 
+// currentState is for testing.
 func currentState() (string, int, int, textInputState, bool) {
 	theFocusedFieldM.Lock()
 	defer theFocusedFieldM.Unlock()
@@ -71,7 +74,9 @@ func currentState() (string, int, int, textInputState, bool) {
 		return "", 0, 0, textInputState{}, false
 	}
 	f := theFocusedField
-	return f.text, f.selectionStartInBytes, f.selectionEndInBytes, f.state, true
+	var b strings.Builder
+	_, _ = f.pieceTable.WriteTo(&b)
+	return b.String(), f.selectionStartInBytes, f.selectionEndInBytes, f.state, true
 }
 
 // Field is a region accepting text inputting with IME.
@@ -82,7 +87,7 @@ func currentState() (string, int, int, textInputState, bool) {
 //
 // For an actual usage, see the examples "textinput".
 type Field struct {
-	text                  string
+	pieceTable            pieceTable
 	selectionStartInBytes int
 	selectionEndInBytes   int
 
@@ -181,17 +186,8 @@ func (f *Field) commit(state textInputState) {
 	if !state.Committed {
 		panic("textinput: commit must be called with committed state")
 	}
-	if state.DeleteEndInBytes-state.DeleteStartInBytes > 0 {
-		if f.selectionStartInBytes > state.DeleteStartInBytes {
-			f.selectionStartInBytes -= state.DeleteEndInBytes - state.DeleteStartInBytes
-		}
-		if f.selectionEndInBytes > state.DeleteStartInBytes {
-			f.selectionEndInBytes -= state.DeleteEndInBytes - state.DeleteStartInBytes
-		}
-		f.text = f.text[:state.DeleteStartInBytes] + f.text[state.DeleteEndInBytes:]
-	}
-	f.text = f.text[:f.selectionStartInBytes] + state.Text + f.text[f.selectionEndInBytes:]
-	f.selectionStartInBytes += len(state.Text)
+	start := f.pieceTable.updateByIME(state, f.selectionStartInBytes, f.selectionEndInBytes)
+	f.selectionStartInBytes = start + len(state.Text)
 	f.selectionEndInBytes = f.selectionStartInBytes
 	f.state = textInputState{}
 }
@@ -264,23 +260,57 @@ func (f *Field) CompositionSelection() (startInBytes, endInBytes int, ok bool) {
 // SetSelection sets the selection range.
 func (f *Field) SetSelection(startInBytes, endInBytes int) {
 	f.cleanUp()
-	f.selectionStartInBytes = startInBytes
-	f.selectionEndInBytes = endInBytes
+	l := f.pieceTable.Len()
+	f.selectionStartInBytes = min(max(startInBytes, 0), l)
+	f.selectionEndInBytes = min(max(endInBytes, 0), l)
 }
 
 // Text returns the current text.
 // The returned value doesn't include compositing texts.
 func (f *Field) Text() string {
-	return f.text
+	var b strings.Builder
+	_ = f.WriteText(&b)
+	return b.String()
 }
 
 // TextForRendering returns the text for rendering.
 // The returned value includes compositing texts.
 func (f *Field) TextForRendering() string {
+	var b strings.Builder
+	_ = f.WriteTextForRendering(&b)
+	return b.String()
+}
+
+// TextLengthInBytes returns the length of the current text in bytes.
+func (f *Field) TextLengthInBytes() int {
+	return f.pieceTable.Len()
+}
+
+// WriteText writes the current text to w.
+// The written text doesn't include compositing texts.
+func (f *Field) WriteText(w io.Writer) error {
+	_, err := f.pieceTable.WriteTo(w)
+	return err
+}
+
+// WriteTextForRendering writes the text for rendering to w.
+// The written text includes compositing texts.
+func (f *Field) WriteTextForRendering(w io.Writer) error {
 	if f.IsFocused() && f.state.Text != "" {
-		return f.text[:f.selectionStartInBytes] + f.state.Text + f.text[f.selectionEndInBytes:]
+		_, _ = f.pieceTable.writeToWithInsertion(w, f.state.Text, f.selectionStartInBytes, f.selectionEndInBytes)
+	} else {
+		_, _ = f.pieceTable.WriteTo(w)
 	}
-	return f.text
+	return nil
+}
+
+// ResetText resets the text.
+// ResetText clears the undo history and initializes it with the specified text.
+func (f *Field) ResetText(text string) {
+	f.cleanUp()
+	f.pieceTable.reset(text)
+	f.selectionStartInBytes = 0
+	f.selectionEndInBytes = 0
 }
 
 // UncommittedTextLengthInBytes returns the compositing text length in bytes when the field is focused and the text is editing.
@@ -294,9 +324,60 @@ func (f *Field) UncommittedTextLengthInBytes() int {
 }
 
 // SetTextAndSelection sets the text and the selection range.
+// This operation is added to the undo history.
 func (f *Field) SetTextAndSelection(text string, selectionStartInBytes, selectionEndInBytes int) {
 	f.cleanUp()
-	f.text = text
-	f.selectionStartInBytes = selectionStartInBytes
-	f.selectionEndInBytes = selectionEndInBytes
+	l := f.pieceTable.Len()
+	f.pieceTable.replace(text, 0, l)
+	f.selectionStartInBytes = min(max(selectionStartInBytes, 0), l)
+	f.selectionEndInBytes = min(max(selectionEndInBytes, 0), l)
+}
+
+// ReplaceText replaces the text at the specified range and updates the selection range.
+// This operation is added to the undo history.
+func (f *Field) ReplaceText(text string, startInBytes, endInBytes int) {
+	f.cleanUp()
+	f.pieceTable.replace(text, startInBytes, endInBytes)
+	f.selectionStartInBytes = startInBytes + len(text)
+	f.selectionEndInBytes = f.selectionStartInBytes
+}
+
+// ReplaceTextAtSelection replaces the text at the selection range and updates the selection range.
+// This operation is added to the undo history.
+func (f *Field) ReplaceTextAtSelection(text string) {
+	f.ReplaceText(text, f.selectionStartInBytes, f.selectionEndInBytes)
+}
+
+// CanUndo reports whether the field can undo or not.
+func (f *Field) CanUndo() bool {
+	return f.pieceTable.canUndo()
+}
+
+// CanRedo reports whether the field can redo or not.
+func (f *Field) CanRedo() bool {
+	return f.pieceTable.canRedo()
+}
+
+// Undo undoes the last operation.
+//
+// History granularity may vary depending on the internal implementation. Do not write code that depends on the granularity.
+func (f *Field) Undo() {
+	start, end, ok := f.pieceTable.undo()
+	if !ok {
+		return
+	}
+	f.selectionStartInBytes = start
+	f.selectionEndInBytes = end
+}
+
+// Redo redoes the last undone operation.
+//
+// History granularity may vary depending on the internal implementation. Do not write code that depends on the granularity.
+func (f *Field) Redo() {
+	start, end, ok := f.pieceTable.redo()
+	if !ok {
+		return
+	}
+	f.selectionStartInBytes = start
+	f.selectionEndInBytes = end
 }

@@ -19,9 +19,12 @@ import (
 	"fmt"
 	"runtime"
 	"syscall"
+	"unsafe"
 
 	"golang.org/x/sys/windows"
 
+	"github.com/hajimehoshi/ebiten/v2/internal/color"
+	"github.com/hajimehoshi/ebiten/v2/internal/colormode"
 	"github.com/hajimehoshi/ebiten/v2/internal/glfw"
 	"github.com/hajimehoshi/ebiten/v2/internal/graphicsdriver"
 	"github.com/hajimehoshi/ebiten/v2/internal/graphicsdriver/directx"
@@ -40,7 +43,7 @@ func (u *UserInterface) setApplePressAndHoldEnabled(enabled bool) {
 
 type graphicsDriverCreatorImpl struct {
 	transparent bool
-	colorSpace  graphicsdriver.ColorSpace
+	colorSpace  color.ColorSpace
 }
 
 func (g *graphicsDriverCreatorImpl) newAuto() (graphicsdriver.Graphics, GraphicsLibrary, error) {
@@ -301,4 +304,28 @@ func init() {
 	// An error is ignored. The application is still valid even if a higher resolution timer is not available.
 	// TODO: This might not be necessary from Go 1.23.
 	_ = windows.TimeBeginPeriod(1)
+}
+
+// setWindowColorModeImpl must be called from the main thread.
+func (u *UserInterface) setWindowColorModeImpl(mode colormode.ColorMode) error {
+	if microsoftgdk.IsXbox() {
+		return nil
+	}
+
+	w, err := u.window.GetWin32Window()
+	if err != nil {
+		return err
+	}
+
+	var useImmersiveDarkMode uint32
+	if mode == colormode.Dark {
+		useImmersiveDarkMode = 1
+	}
+	if err := _DwmSetWindowAttribute(w, _DWMWA_USE_IMMERSIVE_DARK_MODE, unsafe.Pointer(&useImmersiveDarkMode), uint32(unsafe.Sizeof(useImmersiveDarkMode))); err != nil {
+		// DwmSetWindowAttribute can fail if the Windows version is old.
+		// Ignore this error.
+		return nil
+	}
+
+	return nil
 }

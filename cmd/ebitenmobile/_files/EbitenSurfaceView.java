@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package {{.JavaPkg}}.{{.PrefixLower}};
+package $Placeholder_JavaPkg$.$Placeholder_PrefixLower$;
 
 import android.content.Context;
 import android.opengl.GLSurfaceView;
@@ -21,26 +21,62 @@ import android.os.Looper;
 import android.util.AttributeSet;
 import android.util.Log;
 
+import javax.microedition.khronos.egl.EGL10;
 import javax.microedition.khronos.egl.EGLConfig;
+import javax.microedition.khronos.egl.EGLDisplay;
 import javax.microedition.khronos.opengles.GL10;
 
-import {{.JavaPkg}}.ebitenmobileview.Ebitenmobileview;
-import {{.JavaPkg}}.ebitenmobileview.Renderer;
-import {{.JavaPkg}}.{{.PrefixLower}}.EbitenView;
+import $Placeholder_JavaPkg$.ebitenmobileview.Ebitenmobileview;
+import $Placeholder_JavaPkg$.ebitenmobileview.Renderer;
+import $Placeholder_JavaPkg$.$Placeholder_PrefixLower$.EbitenView;
+
+class ConfigChooserWithFallback implements GLSurfaceView.EGLConfigChooser {
+    // EGL_OPENGL_ES2_BIT is defined in EGL14, but not in EGL10.
+    private static final int EGL_OPENGL_ES2_BIT = 4;
+
+    @Override
+    public EGLConfig chooseConfig(EGL10 egl, EGLDisplay display) {
+        int[] attribs = {
+            EGL10.EGL_RED_SIZE, 8,
+            EGL10.EGL_GREEN_SIZE, 8,
+            EGL10.EGL_BLUE_SIZE, 8,
+            EGL10.EGL_ALPHA_SIZE, 8,
+            EGL10.EGL_DEPTH_SIZE, 0,
+            EGL10.EGL_STENCIL_SIZE, 0,
+            EGL10.EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT, // often compatible with ES3.
+            EGL10.EGL_NONE
+        };
+        EGLConfig[] configs = new EGLConfig[1];
+        int[] numConfig = new int[1];
+        if (egl.eglChooseConfig(display, attribs, configs, 1, numConfig) && numConfig[0] > 0) {
+            return configs[0];
+        }
+
+        // Try the fallback config.
+        attribs = new int[] {
+            EGL10.EGL_RED_SIZE, 5,
+            EGL10.EGL_GREEN_SIZE, 6,
+            EGL10.EGL_BLUE_SIZE, 5,
+            EGL10.EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT,
+            EGL10.EGL_NONE
+        };
+        if (egl.eglChooseConfig(display, attribs, configs, 1, numConfig) && numConfig[0] > 0) {
+            return configs[0];
+        }
+
+        throw new IllegalStateException("No suitable EGLConfig found; RGB8888 and RGB565 formats are not supported");
+    }
+}
 
 class EbitenSurfaceView extends GLSurfaceView implements Renderer {
     // As GLSurfaceView can be recreated, the states must be static (#3097).
     static private boolean errored_ = false;
     static private boolean onceSurfaceCreated_ = false;
-    static private boolean contextLost_ = false;
 
     private class EbitenRenderer implements GLSurfaceView.Renderer {
         @Override
         public void onDrawFrame(GL10 gl) {
             if (errored_) {
-                return;
-            }
-            if (contextLost_) {
                 return;
             }
             try {
@@ -58,22 +94,16 @@ class EbitenSurfaceView extends GLSurfaceView implements Renderer {
 
         @Override
         public void onSurfaceCreated(GL10 gl, EGLConfig config) {
-            // As EbitenSurfaceView can be recreated anytime, this flag for strict context restoration must be checked every time.
-            if (Ebitenmobileview.usesStrictContextRestoration()) {
-                Ebitenmobileview.onContextLost();
-                return;
-            }
             if (!onceSurfaceCreated_) {
                 onceSurfaceCreated_ = true;
                 return;
             }
-            contextLost_ = true;
-            new Handler(Looper.getMainLooper()).post(new Runnable() {
-                @Override
-                public void run() {
-                    onContextLost();
-                }
-            });
+            if (Ebitenmobileview.onContextLost()) {
+                Log.i("Go", "The OpenGL context was lost and restored");
+                return;
+            }
+            Log.e("Go", "The application was killed due to context loss");
+            Runtime.getRuntime().exit(0);
         }
 
         @Override
@@ -93,9 +123,10 @@ class EbitenSurfaceView extends GLSurfaceView implements Renderer {
 
     private void initialize() {
         setEGLContextClientVersion(3);
-        setEGLConfigChooser(8, 8, 8, 8, 0, 0);
+        setEGLConfigChooser(new ConfigChooserWithFallback());
         setPreserveEGLContextOnPause(true);
-        // setRenderer must be called before setRenderer. Or, setRenderMode in setExplicitRenderingMode will crash.
+        // setRenderer must be called before Ebitenmobileview.setRenderer.
+        // Otherwise, setRenderMode in setExplicitRenderingMode will crash.
         setRenderer(new EbitenRenderer());
 
         Ebitenmobileview.setRenderer(this);
@@ -103,12 +134,6 @@ class EbitenSurfaceView extends GLSurfaceView implements Renderer {
 
     private void onErrorOnGameUpdate(Exception e) {
         ((EbitenView)getParent()).onErrorOnGameUpdate(e);
-    }
-
-    private void onContextLost() {
-        Log.e("Go", "The application was killed due to context loss");
-        // TODO: Relaunch this application for better UX (#805).
-        Runtime.getRuntime().exit(0);
     }
 
     @Override

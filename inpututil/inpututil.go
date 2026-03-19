@@ -16,11 +16,14 @@
 package inpututil
 
 import (
+	"maps"
 	"slices"
 	"sync"
 
 	"github.com/hajimehoshi/ebiten/v2"
 	"github.com/hajimehoshi/ebiten/v2/internal/hook"
+	"github.com/hajimehoshi/ebiten/v2/internal/inputstate"
+	"github.com/hajimehoshi/ebiten/v2/internal/ui"
 )
 
 type gamepadState struct {
@@ -35,12 +38,6 @@ type touchState struct {
 }
 
 type inputState struct {
-	keyDurations     [ebiten.KeyMax + 1]int
-	prevKeyDurations [ebiten.KeyMax + 1]int
-
-	mouseButtonDurations     [ebiten.MouseButtonMax + 1]int
-	prevMouseButtonDurations [ebiten.MouseButtonMax + 1]int
-
 	gamepadStates     map[ebiten.GamepadID]gamepadState
 	prevGamepadStates map[ebiten.GamepadID]gamepadState
 
@@ -71,33 +68,11 @@ func (i *inputState) update() {
 	i.m.Lock()
 	defer i.m.Unlock()
 
-	// Keyboard
-	copy(i.prevKeyDurations[:], i.keyDurations[:])
-	for idx := range i.keyDurations {
-		if ebiten.IsKeyPressed(ebiten.Key(idx)) {
-			i.keyDurations[idx]++
-		} else {
-			i.keyDurations[idx] = 0
-		}
-	}
-
-	// Mouse
-	copy(i.prevMouseButtonDurations[:], i.mouseButtonDurations[:])
-	for idx := range i.mouseButtonDurations {
-		if ebiten.IsMouseButtonPressed(ebiten.MouseButton(idx)) {
-			i.mouseButtonDurations[idx]++
-		} else {
-			i.mouseButtonDurations[idx] = 0
-		}
-	}
-
 	// Gamepads
 
 	// Copy the gamepad states.
 	clear(i.prevGamepadStates)
-	for id, s := range i.gamepadStates {
-		i.prevGamepadStates[id] = s
-	}
+	maps.Copy(i.prevGamepadStates, i.gamepadStates)
 
 	i.gamepadIDsBuf = ebiten.AppendGamepadIDs(i.gamepadIDsBuf[:0])
 	for _, id := range i.gamepadIDsBuf {
@@ -133,9 +108,7 @@ func (i *inputState) update() {
 
 	// Copy the touch durations and positions.
 	clear(i.prevTouchStates)
-	for id, state := range i.touchStates {
-		i.prevTouchStates[id] = state
-	}
+	maps.Copy(i.prevTouchStates, i.touchStates)
 
 	i.touchIDsBuf = ebiten.AppendTouchIDs(i.touchIDsBuf[:0])
 	for _, id := range i.touchIDsBuf {
@@ -160,16 +133,7 @@ func (i *inputState) update() {
 //
 // AppendPressedKeys is concurrent safe.
 func AppendPressedKeys(keys []ebiten.Key) []ebiten.Key {
-	theInputState.m.RLock()
-	defer theInputState.m.RUnlock()
-
-	for i, d := range theInputState.keyDurations {
-		if d == 0 {
-			continue
-		}
-		keys = append(keys, ebiten.Key(i))
-	}
-	return keys
+	return inputstate.AppendPressedKeys(keys)
 }
 
 // PressedKeys returns a set of currently pressed keyboard keys.
@@ -188,16 +152,7 @@ func PressedKeys() []ebiten.Key {
 //
 // AppendJustPressedKeys is concurrent safe.
 func AppendJustPressedKeys(keys []ebiten.Key) []ebiten.Key {
-	theInputState.m.RLock()
-	defer theInputState.m.RUnlock()
-
-	for i, d := range theInputState.keyDurations {
-		if d != 1 {
-			continue
-		}
-		keys = append(keys, ebiten.Key(i))
-	}
-	return keys
+	return inputstate.AppendJustPressedKeys(keys)
 }
 
 // AppendJustReleasedKeys append just released keyboard keys to keys and returns the extended buffer.
@@ -207,19 +162,7 @@ func AppendJustPressedKeys(keys []ebiten.Key) []ebiten.Key {
 //
 // AppendJustReleasedKeys is concurrent safe.
 func AppendJustReleasedKeys(keys []ebiten.Key) []ebiten.Key {
-	theInputState.m.RLock()
-	defer theInputState.m.RUnlock()
-
-	for i := range theInputState.keyDurations {
-		if theInputState.keyDurations[i] != 0 {
-			continue
-		}
-		if theInputState.prevKeyDurations[i] == 0 {
-			continue
-		}
-		keys = append(keys, ebiten.Key(i))
-	}
-	return keys
+	return inputstate.AppendJustReleasedKeys(keys)
 }
 
 // IsKeyJustPressed returns a boolean value indicating
@@ -229,7 +172,7 @@ func AppendJustReleasedKeys(keys []ebiten.Key) []ebiten.Key {
 //
 // IsKeyJustPressed is concurrent safe.
 func IsKeyJustPressed(key ebiten.Key) bool {
-	return KeyPressDuration(key) == 1
+	return inputstate.Get().IsKeyJustPressed(ui.Key(key))
 }
 
 // IsKeyJustReleased returns a boolean value indicating
@@ -239,9 +182,7 @@ func IsKeyJustPressed(key ebiten.Key) bool {
 //
 // IsKeyJustReleased is concurrent safe.
 func IsKeyJustReleased(key ebiten.Key) bool {
-	theInputState.m.RLock()
-	defer theInputState.m.RUnlock()
-	return theInputState.keyDurations[key] == 0 && theInputState.prevKeyDurations[key] > 0
+	return inputstate.Get().IsKeyJustReleased(ui.Key(key))
 }
 
 // KeyPressDuration returns how long the key is pressed in ticks (Update).
@@ -250,9 +191,7 @@ func IsKeyJustReleased(key ebiten.Key) bool {
 //
 // KeyPressDuration is concurrent safe.
 func KeyPressDuration(key ebiten.Key) int {
-	theInputState.m.RLock()
-	defer theInputState.m.RUnlock()
-	return theInputState.keyDurations[key]
+	return int(inputstate.Get().KeyPressDuration(ui.Key(key)))
 }
 
 // IsMouseButtonJustPressed returns a boolean value indicating
@@ -262,7 +201,7 @@ func KeyPressDuration(key ebiten.Key) int {
 //
 // IsMouseButtonJustPressed is concurrent safe.
 func IsMouseButtonJustPressed(button ebiten.MouseButton) bool {
-	return MouseButtonPressDuration(button) == 1
+	return inputstate.Get().IsMouseButtonJustPressed(ui.MouseButton(button))
 }
 
 // IsMouseButtonJustReleased returns a boolean value indicating
@@ -272,9 +211,7 @@ func IsMouseButtonJustPressed(button ebiten.MouseButton) bool {
 //
 // IsMouseButtonJustReleased is concurrent safe.
 func IsMouseButtonJustReleased(button ebiten.MouseButton) bool {
-	theInputState.m.RLock()
-	defer theInputState.m.RUnlock()
-	return theInputState.mouseButtonDurations[button] == 0 && theInputState.prevMouseButtonDurations[button] > 0
+	return inputstate.Get().IsMouseButtonJustReleased(ui.MouseButton(button))
 }
 
 // MouseButtonPressDuration returns how long the mouse button is pressed in ticks (Update).
@@ -283,9 +220,7 @@ func IsMouseButtonJustReleased(button ebiten.MouseButton) bool {
 //
 // MouseButtonPressDuration is concurrent safe.
 func MouseButtonPressDuration(button ebiten.MouseButton) int {
-	theInputState.m.RLock()
-	defer theInputState.m.RUnlock()
-	return theInputState.mouseButtonDurations[button]
+	return int(inputstate.Get().MouseButtonPressDuration(ui.MouseButton(button)))
 }
 
 // AppendJustConnectedGamepadIDs appends gamepad IDs that are connected just in the current tick to gamepadIDs,

@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package {{.JavaPkg}}.{{.PrefixLower}};
+package $Placeholder_JavaPkg$.$Placeholder_PrefixLower$;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -33,7 +33,7 @@ import android.view.MotionEvent;
 import android.view.ViewGroup;
 import android.view.WindowManager;
 
-import {{.JavaPkg}}.ebitenmobileview.Ebitenmobileview;
+import $Placeholder_JavaPkg$.ebitenmobileview.Ebitenmobileview;
 
 public class EbitenView extends ViewGroup implements InputManager.InputDeviceListener {
     static class Gamepad {
@@ -134,6 +134,10 @@ public class EbitenView extends ViewGroup implements InputManager.InputDeviceLis
 
     @Override
     public boolean onKeyDown(int keyCode, KeyEvent event) {
+        // Ignore key repeat events.
+        if (event.getRepeatCount() > 0) {
+            return super.onKeyDown(keyCode, event);
+        }
         Ebitenmobileview.onKeyDownOnAndroid(keyCode, event.getUnicodeChar(), event.getSource(), event.getDeviceId());
         return true;
     }
@@ -434,6 +438,28 @@ public class EbitenView extends ViewGroup implements InputManager.InputDeviceLis
     // You can define your own error handler, e.g., using Crashlytics, by overriding this method.
     protected void onErrorOnGameUpdate(Exception e) {
         Log.e("Go", e.toString());
+    }
+
+    // saveGPUResources starts to save GPU resources.
+    // saveGPUResources is non-blocking.
+    // You can check whether the GPU resources are being saved by areGPUResourcesSaved.
+    //
+    // Even without saveGPUResources, the GPU resources can be reclaimed by Android OS,
+    // but this is not 100% guaranteed.
+    // If saveGPUResources is called, Ebitengine saves GPU resources and restores them
+    // in the case they are lost.
+    //
+    // It is recommended to call saveGPUResources to true only when necessary e.g. showing a reward ad.
+    //
+    // After GPU resources are saved, rendering is suspended until resumeGame is called or
+    // GLSurfaceView is recreated by an actual context loss.
+    public void saveGPUResources() {
+        Ebitenmobileview.saveGPUResources();
+    }
+
+    // areGPUResourcesSaved reports whether GPU resources are being saved.
+    public boolean areGPUResourcesSaved() {
+        return Ebitenmobileview.areGPUResourcesSaved();
     }
 
     private EbitenSurfaceView ebitenSurfaceView;

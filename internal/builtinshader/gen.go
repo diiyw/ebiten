@@ -78,17 +78,15 @@ func xmain() error {
 
 	for filter := builtinshader.Filter(0); filter < builtinshader.FilterCount; filter++ {
 		for address := builtinshader.Address(0); address < builtinshader.AddressCount; address++ {
-			for _, useColorM := range []bool{false, true} {
-				s := builtinshader.ShaderSource(filter, address, useColorM)
-				if _, err := w.WriteString("\n"); err != nil {
-					return err
-				}
-				if _, err := w.WriteString("//ebitengine:shadersource\n"); err != nil {
-					return err
-				}
-				if _, err := fmt.Fprintf(w, "const _ = %q\n", s); err != nil {
-					return err
-				}
+			s := builtinshader.ShaderSource(filter, address)
+			if _, err := w.WriteString("\n"); err != nil {
+				return err
+			}
+			if _, err := w.WriteString("//ebitengine:shadersource\n"); err != nil {
+				return err
+			}
+			if _, err := fmt.Fprintf(w, "const _ = %q\n", s); err != nil {
+				return err
 			}
 		}
 	}

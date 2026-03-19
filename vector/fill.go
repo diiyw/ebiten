@@ -15,10 +15,133 @@
 package vector
 
 import (
+	"fmt"
+	"image"
 	"slices"
+	"sync"
+	_ "unsafe"
 
 	"github.com/hajimehoshi/ebiten/v2"
 )
+
+// FillRule is the rule whether an overlapped region is rendered or not.
+type FillRule int
+
+const (
+	// FillRuleNonZero means that triangles are rendered based on the non-zero rule.
+	// If and only if the number of overlaps is not 0, the region is rendered.
+	FillRuleNonZero FillRule = iota
+
+	// FillRuleEvenOdd means that triangles are rendered based on the even-odd rule.
+	// If and only if the number of overlaps is odd, the region is rendered.
+	FillRuleEvenOdd
+)
+
+var (
+	theCallbackTokens      = map[*ebiten.Image]int64{}
+	theFillPathsStates     = map[*ebiten.Image]*fillPathsState{}
+	theFillPathsStatesPool = sync.Pool{
+		New: func() any {
+			return &fillPathsState{}
+		},
+	}
+	theFillPathM sync.Mutex
+)
+
+// FillOptions is options to fill a path.
+type FillOptions struct {
+	// FillRule is the rule whether an overlapped region is rendered or not.
+	// The default (zero) value is FillRuleNonZero.
+	FillRule FillRule
+}
+
+// DrawPathOptions is options to draw a path.
+type DrawPathOptions struct {
+	// AntiAlias is whether the path is drawn with anti-aliasing.
+	// The default (zero) value is false.
+	AntiAlias bool
+
+	// ColorScale is the color scale to apply to the path.
+	// The default (zero) value is identity, which is (1, 1, 1, 1) (white).
+	ColorScale ebiten.ColorScale
+
+	// Blend is the blend mode to apply to the path.
+	// The default (zero) value is ebiten.BlendSourceOver.
+	Blend ebiten.Blend
+}
+
+// FillPath fills the specified path with the specified options.
+func FillPath(dst *ebiten.Image, path *Path, fillOptions *FillOptions, drawPathOptions *DrawPathOptions) {
+	if drawPathOptions == nil {
+		drawPathOptions = &DrawPathOptions{}
+	}
+	if fillOptions == nil {
+		fillOptions = &FillOptions{}
+	}
+
+	bounds := dst.Bounds()
+
+	// Get the original image if dst is a sub-image to integrate the callbacks.
+	dst = originalImage(dst)
+
+	theFillPathM.Lock()
+	defer theFillPathM.Unlock()
+
+	// Remove the previous registered callbacks.
+	if token, ok := theCallbackTokens[dst]; ok {
+		removeUsageCallback(dst, token)
+	}
+	delete(theCallbackTokens, dst)
+
+	if _, ok := theFillPathsStates[dst]; !ok {
+		theFillPathsStates[dst] = theFillPathsStatesPool.Get().(*fillPathsState)
+	}
+	s := theFillPathsStates[dst]
+	if s.antialias != drawPathOptions.AntiAlias || s.blend != drawPathOptions.Blend || s.fillRule != fillOptions.FillRule {
+		s.fillPaths(dst)
+		s.reset()
+	}
+	s.antialias = drawPathOptions.AntiAlias
+	s.blend = drawPathOptions.Blend
+	s.fillRule = fillOptions.FillRule
+	s.addPath(path, bounds, drawPathOptions.ColorScale)
+
+	// Use an independent callback function to avoid unexpected captures.
+	theCallbackTokens[dst] = addUsageCallback(dst, fillPathCallback)
+}
+
+func fillPathCallback(dst *ebiten.Image) {
+	if originalImage(dst) != dst {
+		panic("vector: dst must be the original image")
+	}
+
+	theFillPathM.Lock()
+	defer theFillPathM.Unlock()
+
+	// Remove the callback not to call this twice.
+	if token, ok := theCallbackTokens[dst]; ok {
+		removeUsageCallback(dst, token)
+	}
+	delete(theCallbackTokens, dst)
+
+	s, ok := theFillPathsStates[dst]
+	if !ok {
+		panic("vector: fillPathsState must exist here")
+	}
+	s.fillPaths(dst)
+	s.reset()
+	delete(theFillPathsStates, dst)
+	theFillPathsStatesPool.Put(s)
+}
+
+//go:linkname originalImage github.com/hajimehoshi/ebiten/v2.originalImage
+func originalImage(img *ebiten.Image) *ebiten.Image
+
+//go:linkname addUsageCallback github.com/hajimehoshi/ebiten/v2.addUsageCallback
+func addUsageCallback(img *ebiten.Image, fn func(img *ebiten.Image)) int64
+
+//go:linkname removeUsageCallback github.com/hajimehoshi/ebiten/v2.removeUsageCallback
+func removeUsageCallback(img *ebiten.Image, token int64)
 
 type offsetAndColor struct {
 	offsetX    float32
@@ -121,11 +244,14 @@ var (
 
 // theAtlas manages the atlas for stencil buffer images.
 // theAtlas is a singleton to avoid unnecessary texture allocations.
+//
+// theAtlas methods are used only at fillPathsState.fillPaths, and should be protected by theFillPathM.
 var theAtlas atlas
 
 type fillPathsState struct {
 	paths  []*Path
 	colors []ebiten.ColorScale
+	bounds []image.Rectangle
 
 	vertices []ebiten.Vertex
 	indices  []uint32
@@ -140,13 +266,15 @@ func (f *fillPathsState) reset() {
 		p.Reset()
 	}
 	f.paths = f.paths[:0]
+	f.bounds = f.bounds[:0]
 	f.colors = slices.Delete(f.colors, 0, len(f.colors))
 }
 
-func (f *fillPathsState) addPath(path *Path, clr ebiten.ColorScale) {
+func (f *fillPathsState) addPath(path *Path, bounds image.Rectangle, clr ebiten.ColorScale) {
 	if path == nil {
 		return
 	}
+
 	f.paths = slices.Grow(f.paths, 1)[:len(f.paths)+1]
 	if f.paths[len(f.paths)-1] == nil {
 		f.paths[len(f.paths)-1] = &Path{}
@@ -159,64 +287,16 @@ func (f *fillPathsState) addPath(path *Path, clr ebiten.ColorScale) {
 		dst.subPaths[i].ops = slices.Grow(dst.subPaths[i].ops, len(subPath.ops))[:len(subPath.ops)]
 		copy(dst.subPaths[i].ops, subPath.ops)
 	}
+	f.bounds = append(f.bounds, bounds)
 	f.colors = append(f.colors, clr)
 }
 
 // fillPaths fills the specified path with the specified color.
+//
+// fillPaths callers must be protected by theFillPathM.
 func (f *fillPathsState) fillPaths(dst *ebiten.Image) {
 	if len(f.paths) != len(f.colors) {
 		panic("vector: the number of paths and colors must be the same")
-	}
-
-	if stencilBufferFillShader == nil {
-		s, err := ebiten.NewShader([]byte(stencilBufferFillShaderSrc))
-		if err != nil {
-			panic(err)
-		}
-		stencilBufferFillShader = s
-	}
-	if stencilBufferBezierShader == nil {
-		s, err := ebiten.NewShader([]byte(stencilBufferBezierShaderSrc))
-		if err != nil {
-			panic(err)
-		}
-		stencilBufferBezierShader = s
-	}
-	if !f.antialias && f.fillRule == FillRuleNonZero {
-		if stencilBufferNonZeroShader == nil {
-			s, err := ebiten.NewShader([]byte(stencilBufferNonZeroShaderSrc))
-			if err != nil {
-				panic(err)
-			}
-			stencilBufferNonZeroShader = s
-		}
-	}
-	if f.antialias && f.fillRule == FillRuleNonZero {
-		if stencilBufferNonZeroAAShader == nil {
-			s, err := ebiten.NewShader([]byte(stencilBufferNonZeroAAShaderSrc))
-			if err != nil {
-				panic(err)
-			}
-			stencilBufferNonZeroAAShader = s
-		}
-	}
-	if !f.antialias && f.fillRule == FillRuleEvenOdd {
-		if stencilBufferEvenOddShader == nil {
-			s, err := ebiten.NewShader([]byte(stencilBufferEvenOddShaderSrc))
-			if err != nil {
-				panic(err)
-			}
-			stencilBufferEvenOddShader = s
-		}
-	}
-	if f.antialias && f.fillRule == FillRuleEvenOdd {
-		if stencilBufferEvenOddAAShader == nil {
-			s, err := ebiten.NewShader([]byte(stencilBufferEvenOddAAShaderSrc))
-			if err != nil {
-				panic(err)
-			}
-			stencilBufferEvenOddAAShader = s
-		}
 	}
 
 	vs := f.vertices[:0]
@@ -226,7 +306,7 @@ func (f *fillPathsState) fillPaths(dst *ebiten.Image) {
 		f.indices = is
 	}()
 
-	theAtlas.setPaths(dst.Bounds(), f.paths, f.antialias)
+	theAtlas.setPaths(dst.Bounds(), f.paths, f.bounds, f.antialias)
 
 	offsetAndColors := offsetAndColorsNonAA
 	if f.antialias {
@@ -343,7 +423,11 @@ func (f *fillPathsState) fillPaths(dst *ebiten.Image) {
 			}
 			op := &ebiten.DrawTrianglesShaderOptions{}
 			op.Blend = ebiten.BlendLighter
-			stencilBufferImage.DrawTrianglesShader32(vs, is, stencilBufferFillShader, op)
+			shader, err := ensureStencilBufferShaders()
+			if err != nil {
+				panic(fmt.Sprintf("vector: failed to create stencil buffer shader: %v", err))
+			}
+			stencilBufferImage.DrawTrianglesShader32(vs, is, shader, op)
 		}
 	}
 
@@ -415,7 +499,11 @@ func (f *fillPathsState) fillPaths(dst *ebiten.Image) {
 			}
 			op := &ebiten.DrawTrianglesShaderOptions{}
 			op.Blend = ebiten.BlendLighter
-			stencilBufferImage.DrawTrianglesShader32(vs, is, stencilBufferBezierShader, op)
+			shader, err := ensureStencilBufferBezierShader()
+			if err != nil {
+				panic(fmt.Sprintf("vector: failed to create stencil buffer bezier shader: %v", err))
+			}
+			stencilBufferImage.DrawTrianglesShader32(vs, is, shader, op)
 		}
 	}
 
@@ -506,18 +594,22 @@ func (f *fillPathsState) fillPaths(dst *ebiten.Image) {
 		var shader *ebiten.Shader
 		switch f.fillRule {
 		case FillRuleNonZero:
-			if f.antialias {
-				shader = stencilBufferNonZeroAAShader
-			} else {
-				shader = stencilBufferNonZeroShader
+			var err error
+			shader, err = ensureStencilBufferNonZeroShader(f.antialias)
+			if err != nil {
+				panic(fmt.Sprintf("vector: failed to create stencil buffer non-zero shader: %v", err))
 			}
 		case FillRuleEvenOdd:
-			if f.antialias {
-				shader = stencilBufferEvenOddAAShader
-			} else {
-				shader = stencilBufferEvenOddShader
+			var err error
+			shader, err = ensureStencilBufferEvenOddShader(f.antialias)
+			if err != nil {
+				panic(fmt.Sprintf("vector: failed to create stencil buffer even-odd shader: %v", err))
 			}
 		}
-		dst.DrawTrianglesShader32(vs, is, shader, op)
+		dst2 := dst
+		if dst.Bounds() != f.bounds[i] {
+			dst2 = dst.SubImage(f.bounds[i]).(*ebiten.Image)
+		}
+		dst2.DrawTrianglesShader32(vs, is, shader, op)
 	}
 }

@@ -15,6 +15,7 @@
 package graphicscommand
 
 import (
+	"errors"
 	"fmt"
 	"image"
 	"math"
@@ -106,7 +107,7 @@ func mustUseDifferentVertexBuffer(nextNumVertexFloats int) bool {
 }
 
 // EnqueueDrawTrianglesCommand enqueues a drawing-image command.
-func (q *commandQueue) EnqueueDrawTrianglesCommand(dst *Image, srcs [graphics.ShaderSrcImageCount]*Image, vertices []float32, indices []uint32, blend graphicsdriver.Blend, dstRegion image.Rectangle, srcRegions [graphics.ShaderSrcImageCount]image.Rectangle, shader *Shader, uniforms []uint32, fillRule graphicsdriver.FillRule) {
+func (q *commandQueue) EnqueueDrawTrianglesCommand(dst *Image, srcs [graphics.ShaderSrcImageCount]*Image, vertices []float32, indices []uint32, blend graphicsdriver.Blend, dstRegion image.Rectangle, srcRegions [graphics.ShaderSrcImageCount]image.Rectangle, shader *Shader, uniforms []uint32) {
 	if len(vertices) > maxVertexFloatCount {
 		panic(fmt.Sprintf("graphicscommand: len(vertices) must equal to or less than %d but was %d", maxVertexFloatCount, len(vertices)))
 	}
@@ -134,7 +135,7 @@ func (q *commandQueue) EnqueueDrawTrianglesCommand(dst *Image, srcs [graphics.Sh
 	// TODO: If dst is the screen, reorder the command to be the last.
 	if !split && 0 < len(q.commands) {
 		if last, ok := q.commands[len(q.commands)-1].(*drawTrianglesCommand); ok {
-			if last.CanMergeWithDrawTrianglesCommand(dst, srcs, vertices, blend, shader, uniforms, fillRule) {
+			if last.CanMergeWithDrawTrianglesCommand(dst, srcs, vertices, blend, shader, uniforms) {
 				last.setVertices(q.lastVertices(len(vertices) + last.numVertices()))
 				if last.dstRegions[len(last.dstRegions)-1].Region == dstRegion {
 					last.dstRegions[len(last.dstRegions)-1].IndexCount += len(indices)
@@ -154,15 +155,12 @@ func (q *commandQueue) EnqueueDrawTrianglesCommand(dst *Image, srcs [graphics.Sh
 	c.srcs = srcs
 	c.vertices = q.lastVertices(len(vertices))
 	c.blend = blend
-	c.dstRegions = []graphicsdriver.DstRegion{
-		{
-			Region:     dstRegion,
-			IndexCount: len(indices),
-		},
-	}
+	c.dstRegions = append(c.dstRegions[:0], graphicsdriver.DstRegion{
+		Region:     dstRegion,
+		IndexCount: len(indices),
+	})
 	c.shader = shader
 	c.uniforms = uniforms
-	c.fillRule = fillRule
 	c.firstCaller = ""
 	if debug.IsDebug {
 		file, line, typ := debug.FirstCaller()
@@ -250,8 +248,8 @@ func (q *commandQueue) flush(graphicsDriver graphicsdriver.Graphics, endFrame bo
 
 	defer func() {
 		// Call End even if an error causes, or the graphics driver's state might be stale (#2388).
-		if err1 := graphicsDriver.End(endFrame); err1 != nil && err == nil {
-			err = err1
+		if graphicsErr := graphicsDriver.End(endFrame); graphicsErr != nil {
+			err = errors.Join(err, graphicsErr)
 		}
 
 		// Release the commands explicitly (#1803).
@@ -522,11 +520,11 @@ func (c *commandQueueManager) putCommandQueue(commandQueue *commandQueue) {
 	c.pool.put(commandQueue)
 }
 
-func (c *commandQueueManager) enqueueDrawTrianglesCommand(dst *Image, srcs [graphics.ShaderSrcImageCount]*Image, vertices []float32, indices []uint32, blend graphicsdriver.Blend, dstRegion image.Rectangle, srcRegions [graphics.ShaderSrcImageCount]image.Rectangle, shader *Shader, uniforms []uint32, fillRule graphicsdriver.FillRule) {
+func (c *commandQueueManager) enqueueDrawTrianglesCommand(dst *Image, srcs [graphics.ShaderSrcImageCount]*Image, vertices []float32, indices []uint32, blend graphicsdriver.Blend, dstRegion image.Rectangle, srcRegions [graphics.ShaderSrcImageCount]image.Rectangle, shader *Shader, uniforms []uint32) {
 	if c.current == nil {
 		c.current, _ = c.pool.get()
 	}
-	c.current.EnqueueDrawTrianglesCommand(dst, srcs, vertices, indices, blend, dstRegion, srcRegions, shader, uniforms, fillRule)
+	c.current.EnqueueDrawTrianglesCommand(dst, srcs, vertices, indices, blend, dstRegion, srcRegions, shader, uniforms)
 }
 
 func (c *commandQueueManager) flush(graphicsDriver graphicsdriver.Graphics, endFrame bool) error {

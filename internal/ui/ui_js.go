@@ -22,6 +22,7 @@ import (
 	"syscall/js"
 	"time"
 
+	"github.com/hajimehoshi/ebiten/v2/internal/color"
 	"github.com/hajimehoshi/ebiten/v2/internal/file"
 	"github.com/hajimehoshi/ebiten/v2/internal/gamepad"
 	"github.com/hajimehoshi/ebiten/v2/internal/graphicsdriver"
@@ -31,7 +32,7 @@ import (
 
 type graphicsDriverCreatorImpl struct {
 	canvas     js.Value
-	colorSpace graphicsdriver.ColorSpace
+	colorSpace color.ColorSpace
 }
 
 func (g *graphicsDriverCreatorImpl) newAuto() (graphicsdriver.Graphics, GraphicsLibrary, error) {
@@ -100,14 +101,13 @@ type userInterfaceImpl struct {
 	lastCaptureExitTime time.Time
 	hiDPIEnabled        bool
 
-	context                   *context
-	inputState                InputState
-	keyDurationsByKeyProperty map[Key]int
-	cursorXInClient           float64
-	cursorYInClient           float64
-	origCursorXInClient       float64
-	origCursorYInClient       float64
-	touchesInClient           []touchInClient
+	context             *context
+	inputState          InputState
+	cursorXInClient     float64
+	cursorYInClient     float64
+	origCursorXInClient float64
+	origCursorYInClient float64
+	touchesInClient     []touchInClient
 
 	savedCursorX              float64
 	savedCursorY              float64
@@ -706,7 +706,7 @@ func (u *UserInterface) setCanvasEventHandlers(v js.Value) {
 
 	// Blur
 	v.Call("addEventListener", "blur", js.FuncOf(func(this js.Value, args []js.Value) any {
-		u.inputState.resetForBlur()
+		u.inputState.releaseAllButtons(u.InputTime())
 		return nil
 	}))
 }
@@ -864,4 +864,8 @@ func IsScreenTransparentAvailable() bool {
 
 func dipToNativePixels(x float64, scale float64) float64 {
 	return x
+}
+
+func (u *UserInterface) RunOnMainThread(f func()) {
+	f()
 }

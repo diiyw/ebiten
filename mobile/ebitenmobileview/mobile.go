@@ -26,11 +26,13 @@ package ebitenmobileview
 import "C"
 
 import (
+	"errors"
+	"os"
 	"runtime"
 	"sync"
 
 	"github.com/hajimehoshi/ebiten/v2"
-	"github.com/hajimehoshi/ebiten/v2/internal/restorable"
+	"github.com/hajimehoshi/ebiten/v2/internal/atlas"
 	"github.com/hajimehoshi/ebiten/v2/internal/ui"
 )
 
@@ -102,7 +104,17 @@ func Update() error {
 		return nil
 	}
 
-	return ui.Get().Update()
+	if err := ui.Get().Update(); err != nil {
+		// On Java and Objective-C, an error is treated just an error or an exception, even if it is ebiten.Termination.
+		// There is no way to distinguish it from other errors.
+		// Just terminate the application if the error is ebiten.Termination (#3288).
+		if errors.Is(err, ebiten.Termination) {
+			os.Exit(0)
+			return nil
+		}
+		return err
+	}
+	return nil
 }
 
 func Suspend() error {
@@ -110,11 +122,12 @@ func Suspend() error {
 }
 
 func Resume() error {
+	atlas.ResumeApp()
 	return ui.Get().SetForeground(true)
 }
 
-func OnContextLost() {
-	restorable.OnContextLost()
+func OnContextLost() bool {
+	return atlas.RestoreGPUResources()
 }
 
 func DeviceScale() float64 {
@@ -133,6 +146,10 @@ func SetSetGameNotifier(setGameNotifier SetGameNotifier) {
 	theState.setSetGameNotifier(setGameNotifier)
 }
 
-func UsesStrictContextRestoration() bool {
-	return ui.Get().UsesStrictContextRestoration()
+func SaveGPUResources() {
+	atlas.SaveGPUResources()
+}
+
+func AreGPUResourcesSaved() bool {
+	return atlas.AreGPUResourcesSaved()
 }

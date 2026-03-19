@@ -160,7 +160,7 @@ func NewGoTextFaceSource(source io.Reader) (*GoTextFaceSource, error) {
 		return nil, err
 	}
 
-	s := newGoTextFaceSource(&font.Face{Font: f})
+	s := newGoTextFaceSource(font.NewFace(f))
 	return s, nil
 }
 
@@ -182,7 +182,7 @@ func NewGoTextFaceSourcesFromCollection(source io.Reader) ([]*GoTextFaceSource, 
 		if err != nil {
 			return nil, err
 		}
-		s := newGoTextFaceSource(&font.Face{Font: f})
+		s := newGoTextFaceSource(font.NewFace(f))
 		sources[i] = s
 	}
 	return sources, nil
@@ -265,7 +265,6 @@ func (g *GoTextFaceSource) shapeImpl(text string, face *GoTextFace) ([]shaping.O
 		indices = append(indices, len(text))
 
 		for _, gl := range out.Glyphs {
-			gl := gl
 			var segs []opentype.Segment
 			if g.glyphDataCache == nil {
 				g.glyphDataCache = newCache[glyphDataCacheKey, font.GlyphData](512)
@@ -308,8 +307,8 @@ func (g *GoTextFaceSource) shapeImpl(text string, face *GoTextFace) ([]shaping.O
 
 			gs = append(gs, glyph{
 				shapingGlyph:   &gl,
-				startIndex:     indices[gl.ClusterIndex],
-				endIndex:       indices[gl.ClusterIndex+gl.RuneCount],
+				startIndex:     indices[gl.TextIndex()],
+				endIndex:       indices[gl.TextIndex()+gl.RunesCount()],
 				scaledSegments: scaledSegs,
 				bounds:         segmentsToBounds(scaledSegs),
 			})
